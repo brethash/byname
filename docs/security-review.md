@@ -62,7 +62,9 @@ ot can now run on an AWS Lightsail or Hetzner Cloud server
 ([cloud.md](cloud.md)). The app and its request checks are unchanged. What
 changes is where it runs and who else can reach the machine.
 
-**Exposure.** No TCP port is public. The provider's firewall (Lightsail
+**Exposure.** Once a server is created, no TCP port is public. (A new
+Lightsail instance has AWS's default SSH/HTTP rules for the minute before
+OpenTofu replaces them; sshd is key-only.) The provider's firewall (Lightsail
 public ports, a Hetzner firewall) and nftables each allow only UDP 41641 in
 from the internet. That is Tailscale's WireGuard port, which never answers a
 packet from an unknown peer. Port 80 (ot) and port 22 (OpenSSH, as a fallback

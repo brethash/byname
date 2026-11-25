@@ -43,8 +43,8 @@ variable "tailscale_auth_key" {
   sensitive   = true
 
   validation {
-    condition     = can(regex("^tskey-(auth|client)-[A-Za-z0-9-]+(\\?[A-Za-z0-9=&_-]+)?$", var.tailscale_auth_key))
-    error_message = "tailscale_auth_key must be a Tailscale auth key (tskey-auth-…)."
+    condition     = can(regex("^tskey-auth-[A-Za-z0-9-]+$", var.tailscale_auth_key))
+    error_message = "tailscale_auth_key must be a one-off auth key (tskey-auth-…). OAuth client secrets (tskey-client-…) are reusable and never expire, so they must not go into user data."
   }
 }
 

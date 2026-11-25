@@ -15,6 +15,10 @@
 # tagged auth key. deploy/host/bootstrap.sh, run over the tailnet, does the
 # rest. Output: /var/log/cloud-init-output.log.
 set -euo pipefail
+# The wrapper ran with umask 077 to keep itself private. Files made here must
+# be world-readable where Debian expects it: apt verifies signatures as the
+# unprivileged _apt user and ignores a keyring it can't read.
+umask 022
 : "${OT_NAME:?}" "${OT_TAG:?}" "${OT_ADMIN_USER:?}" "${OT_SSH_KEY:?}" "${OT_TS_AUTHKEY:?}"
 
 log() { printf 'ot first-boot: %s\n' "$*"; }
@@ -69,6 +73,7 @@ log "admin user $OT_ADMIN_USER"
 repo="https://pkgs.tailscale.com/stable/${ID}/${VERSION_CODENAME}"
 curl -fsSL --retry 5 "$repo.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg
 curl -fsSL --retry 5 "$repo.tailscale-keyring.list" -o /etc/apt/sources.list.d/tailscale.list
+chmod 0644 /usr/share/keyrings/tailscale-archive-keyring.gpg /etc/apt/sources.list.d/tailscale.list
 apt_get update
 apt_get install -y tailscale >/dev/null
 systemctl enable --now tailscaled >/dev/null

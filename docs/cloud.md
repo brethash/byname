@@ -84,9 +84,12 @@ tofu apply                                      # shows which server type was in
 
 First boot takes a minute or two. It sets the hostname, creates an `admin`
 account with your SSH key, installs Tailscale and joins your tailnet as `ot`
-with Tailscale SSH on. Its log is `/var/log/cloud-init-output.log`. From the
-internet, only Tailscale's WireGuard port (UDP 41641) is open, and WireGuard
-never answers anyone it doesn't know.
+with Tailscale SSH on. Its log is `/var/log/cloud-init-output.log`. Once
+`tofu apply` finishes, only Tailscale's WireGuard port (UDP 41641) is open
+from the internet, and WireGuard never answers anyone it doesn't know. On
+Lightsail, the new instance starts with AWS's default firewall (SSH and HTTP
+open) for the minute or so until OpenTofu applies the port rules; SSH accepts
+only your key during that window. Hetzner attaches its firewall at creation.
 
 The server's `name` is fixed once it exists. To rename, create a new server
 and move the data over.
