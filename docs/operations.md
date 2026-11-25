@@ -1,34 +1,34 @@
-# Operating ot
+# Operating byname
 
 Everything here runs from the repo on your Mac unless it says "on the host".
 The host is a Raspberry Pi at home (first-time setup below) or a cloud server
 at AWS or Hetzner ([cloud.md](cloud.md)). After setup, both are run the same
 way.
 
-**The service name.** `ot` is the default: people type `ot/wiki`, and the
-host is called `ot`. To use another name (`go`, `links`…), pass
+**The service name.** `nym` is the default: people type `nym/wiki`, and the
+host is called `nym`. To use another name (`go`, `links`…), pass
 `--name <name>` to `bootstrap.sh` (or set `name` in `deploy/cloud`). Then use
-that name wherever these docs say `ot` in a hostname or URL, and
-`tag:<name>` for the Tailscale tag. The program's own files (`ot.service`,
-`/etc/ot`, `ot-verify`) keep their names.
+that name wherever these docs say `nym` in a hostname or URL, and
+`tag:<name>` for the Tailscale tag. The program's own files (`byname.service`,
+`/etc/byname`, `byname-verify`) keep their names.
 
 ## What lives where on the host
 
 | Path | What |
 |---|---|
-| `/usr/local/lib/ot/<version>/ot` | deployed binaries (current + 2 previous) |
-| `/usr/local/lib/ot/current` | symlink to the live version |
-| `/etc/ot/ot.env` | `ot serve` settings (`OT_HOSTS`, …), rewritten by `bootstrap.sh` |
-| `/etc/ot/ot.local.env` | your own `OT_*` overrides (kept across bootstrap runs) |
-| `/etc/ot/host.conf` | platform (`pi`/`cloud`), name and tag, for `ot-verify` |
-| `/etc/systemd/system/ot.service.d/10-lan-access.conf` | present only with `--lan-access` |
-| `/etc/ot/firewall.nft` | nftables table `inet ot_filter` |
-| `/etc/ot/ot-backup.env` | backup bucket/region (optional) |
-| `/etc/credstore/ot-backup-aws` | backup AWS key (root 0600, optional) |
-| `/var/lib/ot/ot.db` | the database (SQLite, WAL) |
-| `/var/lib/ot/snapshots/` | `ot-<UTC time>.db` snapshots (last 14) |
-| `/usr/local/sbin/ot-verify`, `ot-restore` | checks and restore helper |
-| units | `ot.service`, `ot-firewall.service`, `ot-backup.service` + `.timer` |
+| `/usr/local/lib/byname/<version>/byname` | deployed binaries (current + 2 previous) |
+| `/usr/local/lib/byname/current` | symlink to the live version |
+| `/etc/byname/byname.env` | `byname serve` settings (`BYNAME_HOSTS`, …), rewritten by `bootstrap.sh` |
+| `/etc/byname/byname.local.env` | your own `BYNAME_*` overrides (kept across bootstrap runs) |
+| `/etc/byname/host.conf` | platform (`pi`/`cloud`), name and tag, for `byname-verify` |
+| `/etc/systemd/system/byname.service.d/10-lan-access.conf` | present only with `--lan-access` |
+| `/etc/byname/firewall.nft` | nftables table `inet byname_filter` |
+| `/etc/byname/byname-backup.env` | backup bucket/region (optional) |
+| `/etc/credstore/byname-backup-aws` | backup AWS key (root 0600, optional) |
+| `/var/lib/byname/byname.db` | the database (SQLite, WAL) |
+| `/var/lib/byname/snapshots/` | `byname-<UTC time>.db` snapshots (last 14) |
+| `/usr/local/sbin/byname-verify`, `byname-restore` | checks and restore helper |
+| units | `byname.service`, `byname-firewall.service`, `byname-backup.service` + `.timer` |
 
 ## First-time setup on a Raspberry Pi (milestone M0)
 
@@ -37,36 +37,36 @@ For a cloud server, follow [cloud.md](cloud.md) instead.
 ### 1. Tailscale policy (admin console, before the Pi joins)
 
 Merge [`deploy/tailscale/policy.hujson`](../deploy/tailscale/policy.hujson) into
-your tailnet policy: it defines `tag:ot`, lets household members reach it on
+your tailnet policy: it defines `tag:nym`, lets household members reach it on
 port 80, and allows you Tailscale SSH to it. Confirm MagicDNS is on
-(admin console → DNS). Make sure no other device is already named `ot`.
+(admin console → DNS). Make sure no other device is already named `nym`.
 
 ### 2. Flash the SD card
 
 Raspberry Pi Imager → **Raspberry Pi OS Lite (64-bit)**. In OS customisation:
 
-- hostname `ot` (or your own service name)
+- hostname `nym` (or your own service name)
 - your own username (not `pi`) and password
 - **Services → Enable SSH → Allow public-key authentication only**, paste your key
 - **no** Wi-Fi settings (wired Ethernet only)
 - your locale and time zone
 
 Use the official 5.1 V / 2.5 A supply. Under-voltage is the usual cause of SD
-corruption, and `ot-verify` checks for it.
+corruption, and `byname-verify` checks for it.
 
 ### 3. Router: fixed address and a name for LAN devices
 
 Boot the Pi on Ethernet and, in your router:
 
 1. **Reserve its DHCP address** so it never changes.
-2. **Make `ot` resolve to that address** for home-network devices. Many
-   routers already register DHCP hostnames, so `ot` (or `ot.<router-domain>`,
-   e.g. `ot.lan`) may work as soon as the Pi has booted. Check from a device
-   with Tailscale off: `nslookup ot`. If it doesn't resolve, add a local DNS /
-   static host entry `ot` → the reserved address. Note your router's local
+2. **Make `nym` resolve to that address** for home-network devices. Many
+   routers already register DHCP hostnames, so `nym` (or `nym.<router-domain>`,
+   e.g. `nym.lan`) may work as soon as the Pi has booted. Check from a device
+   with Tailscale off: `nslookup nym`. If it doesn't resolve, add a local DNS /
+   static host entry `nym` → the reserved address. Note your router's local
    domain (often `lan` or `home`).
 
-Devices running Tailscale keep using MagicDNS for `ot`; this entry is only
+Devices running Tailscale keep using MagicDNS for `nym`; this entry is only
 for devices without it.
 
 ### 4. Bootstrap over the LAN
@@ -77,32 +77,32 @@ ssh <you>@<pi-lan-ip> 'sudo ./deploy/host/bootstrap.sh --admin-user <you> --lan-
 ```
 
 Use your real LAN subnet and router domain, and add `--name <name>` if you
-aren't using `ot`. Leave out `--lan-access` to keep
-ot tailnet-only. Running the script again without it turns LAN access off.
+aren't using `nym`. Leave out `--lan-access` to keep
+byname tailnet-only. Running the script again without it turns LAN access off.
 The script refuses to load the firewall if your SSH session comes from
-outside the LAN subnet. It removes `avahi-daemon`, so `ot.local` stops
-resolving. Use the LAN IP or, after the next step, `ot` over Tailscale.
+outside the LAN subnet. It removes `avahi-daemon`, so `nym.local` stops
+resolving. Use the LAN IP or, after the next step, `nym` over Tailscale.
 
 ### 5. Join the tailnet
 
 ```sh
 ssh <you>@<pi-lan-ip>
-sudo tailscale up --ssh --hostname=ot --advertise-tags=tag:ot   # open the printed URL
-sudo ./deploy/host/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24 --lan-access --lan-domain lan   # again: fills OT_HOSTS
+sudo tailscale up --ssh --hostname=nym --advertise-tags=tag:nym   # open the printed URL
+sudo ./deploy/host/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24 --lan-access --lan-domain lan   # again: fills BYNAME_HOSTS
 sudo reboot                                                       # applies Wi-Fi/BT off
 ```
 
-From now on, `ssh <you>@ot` works from anywhere on the tailnet (Tailscale SSH;
+From now on, `ssh <you>@nym` works from anywhere on the tailnet (Tailscale SSH;
 the "check" rule asks you to re-confirm in the browser now and then).
 
 ### 6. Deploy and verify
 
 ```sh
-make deploy TARGET=<you>@ot
-ssh <you>@ot sudo ot-verify
+make deploy TARGET=<you>@nym
+ssh <you>@nym sudo byname-verify
 ```
 
-`ot-verify` checks the whole baseline: radios off, SSH hardening, updates,
+`byname-verify` checks the whole baseline: radios off, SSH hardening, updates,
 journal in RAM, firewall, LAN access consistent across firewall, systemd and
 app, Tailscale name and tag, the sandbox exposure score (≤ 2.0), health and
 WhoIs over the tailnet, and the DNS-rebinding guard. Its exit code is the
@@ -112,11 +112,11 @@ number of failures.
 
 On each device with Tailscale (app connected, "Use Tailscale DNS" on):
 
-1. open `http://ot/_/whoami`. It should show that person's Tailscale login.
-2. create `ot/test` once, then type `ot/test` in the address bar.
+1. open `http://nym/_/whoami`. It should show that person's Tailscale login.
+2. create `nym/test` once, then type `nym/test` in the address bar.
 
-On a device **without** Tailscale on the home Wi-Fi, `http://ot/_/whoami`
-should say "home network (no Tailscale)", and `ot/test` should open.
+On a device **without** Tailscale on the home Wi-Fi, `http://nym/_/whoami`
+should say "home network (no Tailscale)", and `nym/test` should open.
 
 Record what happens in [client-setup.md](client-setup.md). If you have a
 guest Wi-Fi, from it `curl -m 5 http://<pi-lan-ip>/` should time out.
@@ -124,7 +124,7 @@ guest Wi-Fi, from it `curl -m 5 http://<pi-lan-ip>/` should time out.
 ## Deploying changes
 
 ```sh
-make deploy TARGET=<you>@ot          # cloud: TARGET=admin@ot
+make deploy TARGET=<you>@nym          # cloud: TARGET=admin@nym
 ```
 
 This runs the full gate (vet, staticcheck, race tests, govulncheck,
@@ -133,7 +133,7 @@ matches the host, then on the host:
 
 1. verifies the binary's sha256;
 2. snapshots the database **with the current binary** (before any migration);
-3. switches the `current` symlink atomically and restarts `ot`;
+3. switches the `current` symlink atomically and restarts `nym`;
 4. polls `/_/healthz` for the new version for 20 s; on failure it switches
    back and restarts the previous version.
 
@@ -141,12 +141,12 @@ It refuses a dirty working tree unless you set `FORCE=1`.
 
 If a release that changed the database schema has to be rolled back, the old
 binary refuses the newer schema on purpose. Restore the pre-deploy snapshot
-that step 2 wrote: `sudo ot-restore $(ls -1 /var/lib/ot/snapshots/ot-*.db | tail -1)`.
+that step 2 wrote: `sudo byname-restore $(ls -1 /var/lib/byname/snapshots/byname-*.db | tail -1)`.
 
 ## Backups (S3)
 
-`ot serve` writes a snapshot 60 s after any change and every 24 h. The hourly
-`ot-backup.timer` uploads the newest one if it hasn't uploaded it yet.
+`byname serve` writes a snapshot 60 s after any change and every 24 h. The hourly
+`byname-backup.timer` uploads the newest one if it hasn't uploaded it yet.
 
 ### One-time AWS setup (from your Mac, with admin credentials)
 
@@ -160,13 +160,13 @@ aws s3api put-bucket-encryption --bucket $B --server-side-encryption-configurati
   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 aws s3api put-bucket-lifecycle-configuration --bucket $B --lifecycle-configuration file://deploy/aws/lifecycle.json
 
-sed "s/BUCKET_NAME/$B/" deploy/aws/iam-policy.json > /tmp/ot-backup-policy.json
-aws iam create-user --user-name ot-backup
-aws iam put-user-policy --user-name ot-backup --policy-name ot-backup-put --policy-document file:///tmp/ot-backup-policy.json
-aws iam create-access-key --user-name ot-backup      # note the key id and secret
+sed "s/BUCKET_NAME/$B/" deploy/aws/iam-policy.json > /tmp/byname-backup-policy.json
+aws iam create-user --user-name byname-backup
+aws iam put-user-policy --user-name byname-backup --policy-name byname-backup-put --policy-document file:///tmp/byname-backup-policy.json
+aws iam create-access-key --user-name byname-backup      # note the key id and secret
 ```
 
-The key can only `PutObject` (with SSE) under `ot/`. It cannot list, read or
+The key can only `PutObject` (with SSE) under `byname/`. It cannot list, read or
 delete, and versioning keeps every earlier object even if a key is
 overwritten. A stolen Pi or a compromised server therefore can't destroy the
 backup history. Cost
@@ -175,14 +175,14 @@ for a household's links is a fraction of a cent a month.
 ### On the host
 
 ```sh
-sudo install -m 0600 /dev/null /etc/credstore/ot-backup-aws
-sudo nano /etc/credstore/ot-backup-aws
+sudo install -m 0600 /dev/null /etc/credstore/byname-backup-aws
+sudo nano /etc/credstore/byname-backup-aws
 #   [default]
 #   aws_access_key_id = AKIA...
 #   aws_secret_access_key = ...
-sudo cp /etc/ot/ot-backup.env.example /etc/ot/ot-backup.env && sudo nano /etc/ot/ot-backup.env
-sudo systemctl enable --now ot-backup.timer
-sudo systemctl start ot-backup.service && journalctl -u ot-backup -n 5
+sudo cp /etc/byname/byname-backup.env.example /etc/byname/byname-backup.env && sudo nano /etc/byname/byname-backup.env
+sudo systemctl enable --now byname-backup.timer
+sudo systemctl start byname-backup.service && journalctl -u byname-backup -n 5
 ```
 
 ## Restore
@@ -190,47 +190,47 @@ sudo systemctl start ot-backup.service && journalctl -u ot-backup -n 5
 From a local snapshot (on the host):
 
 ```sh
-ls /var/lib/ot/snapshots/
-sudo ot-restore /var/lib/ot/snapshots/ot-20261124T120000.000Z.db
+ls /var/lib/byname/snapshots/
+sudo byname-restore /var/lib/byname/snapshots/byname-20261124T120000.000Z.db
 ```
 
 From S3 (the host's key cannot read, so fetch from your Mac):
 
 ```sh
-aws s3 ls s3://$B/ot/
-aws s3 cp s3://$B/ot/ot-20261124T120000.000Z.db.gz .
-scp ot-20261124T120000.000Z.db.gz <you>@ot:
-ssh <you>@ot sudo ot-restore ot-20261124T120000.000Z.db.gz
+aws s3 ls s3://$B/byname/
+aws s3 cp s3://$B/byname/byname-20261124T120000.000Z.db.gz .
+scp byname-20261124T120000.000Z.db.gz <you>@nym:
+ssh <you>@nym sudo byname-restore byname-20261124T120000.000Z.db.gz
 ```
 
-`ot-restore` integrity-checks the file, snapshots the current database first
-(so the restore itself can be undone), swaps the file and restarts `ot`.
+`byname-restore` integrity-checks the file, snapshots the current database first
+(so the restore itself can be undone), swaps the file and restarts `nym`.
 
 ### Restore drill (do this once in M3, then yearly)
 
 Non-destructively, on your Mac:
 
 ```sh
-aws s3 cp s3://$B/ot/<newest>.db.gz - | gunzip > /tmp/drill.db
-bin/ot export --db /tmp/drill.db | head -40     # links are there
+aws s3 cp s3://$B/byname/<newest>.db.gz - | gunzip > /tmp/drill.db
+bin/byname export --db /tmp/drill.db | head -40     # links are there
 ```
 
 ## Day to day
 
 | Task | Command |
 |---|---|
-| Logs | `ssh <you>@ot journalctl -u ot -f` (debug detail: `OT_LOG_LEVEL=debug` in `/etc/ot/ot.env`) |
-| Health | `curl http://ot/_/healthz` (version, link count, free disk; under-voltage flags on a Pi) |
-| Who changed what | `http://ot/_/activity`, or a link's page (`ot/name+`) |
+| Logs | `ssh <you>@nym journalctl -u byname -f` (debug detail: `BYNAME_LOG_LEVEL=debug` in `/etc/byname/byname.env`) |
+| Health | `curl http://nym/_/healthz` (version, link count, free disk; under-voltage flags on a Pi) |
+| Who changed what | `http://nym/_/activity`, or a link's page (`nym/name+`) |
 | Undo a bad edit | link page → History → "Restore this version" |
-| Export | `http://ot/_/export` or `sudo -u ot /usr/local/lib/ot/current/ot export` |
-| Bulk import | `sudo -u ot /usr/local/lib/ot/current/ot import --hosts ot --dry-run file.json` |
-| Change settings | edit `/etc/ot/ot.local.env` (yours; `ot.env` is managed), then `sudo systemctl restart ot` |
+| Export | `http://nym/_/export` or `sudo -u byname /usr/local/lib/byname/current/byname export` |
+| Bulk import | `sudo -u byname /usr/local/lib/byname/current/byname import --hosts nym --dry-run file.json` |
+| Change settings | edit `/etc/byname/byname.local.env` (yours; `byname.env` is managed), then `sudo systemctl restart byname` |
 | Turn LAN access on/off | re-run `bootstrap.sh` with or without `--lan-access` |
 | Turn the public address on/off | re-run `bootstrap.sh` with or without `--public` ([public-access.md](public-access.md)) |
-| Who is signed in (public address) | `sudo -u ot /usr/local/lib/ot/current/ot sessions`; `… sessions revoke <email>` signs someone out |
-| Rotate the AWS key | create a new key, replace `/etc/credstore/ot-backup-aws`, delete the old key |
-| Re-check baseline | `sudo ot-verify` |
+| Who is signed in (public address) | `sudo -u byname /usr/local/lib/byname/current/byname sessions`; `… sessions revoke <email>` signs someone out |
+| Rotate the AWS key | create a new key, replace `/etc/credstore/byname-backup-aws`, delete the old key |
+| Re-check baseline | `sudo byname-verify` |
 
 The OS (and Raspberry Pi firmware) and Tailscale update themselves daily.
 The host reboots at 04:00 when an update needs it.
@@ -239,19 +239,19 @@ The host reboots at 04:00 when an update needs it.
 
 | Symptom | Likely cause |
 |---|---|
-| Browser searches for `ot/foo` | See [client-setup.md](client-setup.md); type `http://ot/foo` once, or use the keyword shortcut |
-| "ot is not reachable from this network" (403) | The device's address isn't allowed: it's outside the LAN subnet (guest Wi-Fi?) without Tailscale, or LAN access is off and Tailscale is off on that device |
-| `ot` doesn't resolve on a device without Tailscale | Router DNS has no `ot` entry; see step 3. Meanwhile `http://<pi-lan-ip>/` works (bootstrap adds the Pi's LAN address to `OT_HOSTS`); re-run bootstrap if that address changed |
-| "unknown host" (421) | A name other than those in `OT_HOSTS` (e.g. `ot.home` when you passed `--lan-domain lan`); re-run bootstrap with the right `--lan-domain`, or add it via `OT_HOSTS` in `/etc/ot/ot.local.env` |
-| "cross-origin request blocked" (403) | A page on another site tried to change a link. That's working as designed. If it was you, use the ot UI itself |
-| `/_/whoami` shows no Tailscale user | WhoIs failed; `journalctl -u ot \| grep whois`; check `/var/run/tailscale/tailscaled.sock` exists |
-| Locked out of SSH | Tailscale SSH (`ssh <you>@ot`) bypasses the LAN rule. Otherwise, on a Pi use a keyboard and HDMI, then `sudo systemctl stop ot-firewall`. A cloud server has no console login: build a new one ([cloud.md](cloud.md)) and restore the newest S3 backup (see Restore) |
-| Deploy rolled back | Read the journal lines it printed; `ssh <you>@ot journalctl -u ot -n 50` |
+| Browser searches for `nym/foo` | See [client-setup.md](client-setup.md); type `http://nym/foo` once, or use the keyword shortcut |
+| "byname is not reachable from this network" (403) | The device's address isn't allowed: it's outside the LAN subnet (guest Wi-Fi?) without Tailscale, or LAN access is off and Tailscale is off on that device |
+| `nym` doesn't resolve on a device without Tailscale | Router DNS has no `nym` entry; see step 3. Meanwhile `http://<pi-lan-ip>/` works (bootstrap adds the Pi's LAN address to `BYNAME_HOSTS`); re-run bootstrap if that address changed |
+| "unknown host" (421) | A name other than those in `BYNAME_HOSTS` (e.g. `nym.home` when you passed `--lan-domain lan`); re-run bootstrap with the right `--lan-domain`, or add it via `BYNAME_HOSTS` in `/etc/byname/byname.local.env` |
+| "cross-origin request blocked" (403) | A page on another site tried to change a link. That's working as designed. If it was you, use the byname UI itself |
+| `/_/whoami` shows no Tailscale user | WhoIs failed; `journalctl -u byname \| grep whois`; check `/var/run/tailscale/tailscaled.sock` exists |
+| Locked out of SSH | Tailscale SSH (`ssh <you>@nym`) bypasses the LAN rule. Otherwise, on a Pi use a keyboard and HDMI, then `sudo systemctl stop byname-firewall`. A cloud server has no console login: build a new one ([cloud.md](cloud.md)) and restore the newest S3 backup (see Restore) |
+| Deploy rolled back | Read the journal lines it printed; `ssh <you>@nym journalctl -u byname -n 50` |
 
 ## Security model in one paragraph
 
 Only tailnet devices, plus home-LAN devices when `--lan-access` is on, can
-reach ot's plain-HTTP address: nftables, systemd `IPAddressAllow` and the app
+reach byname's plain-HTTP address: nftables, systemd `IPAddressAllow` and the app
 itself each check that. (The optional public address is separate: Tailscale
 Funnel delivers it over a private socket, and everyone outside the tailnet
 must sign in with Google or Slack; see [public-access.md](public-access.md).) Anyone who can reach it may create or edit links; there are no logins.

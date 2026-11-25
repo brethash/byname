@@ -10,20 +10,20 @@ import (
 	"strings"
 	"time"
 
-	"otterly-go/internal/auth"
-	"otterly-go/internal/store"
+	"byname/internal/auth"
+	"byname/internal/store"
 )
 
 // The public address, served one of two ways.
 //
-// Directly (fromDirect): ot terminates TLS for its own domain on :443 with a
+// Directly (fromDirect): byname terminates TLS for its own domain on :443 with a
 // Let's Encrypt certificate. Nothing in a request is trusted: the peer is the
 // TCP peer, and every request counts as coming from the internet.
 //
 // Behind Tailscale (fromServe): Tailscale Funnel publishes
 // https://<name>.<tailnet>.ts.net on the internet and Tailscale Serve answers
 // the same name for tailnet devices. tailscaled terminates TLS and proxies
-// both to ot over a unix socket that only it (root) and ot can open. ot
+// both to byname over a unix socket that only it (root) and byname can open. byname
 // trusts what tailscaled adds to those requests, and only on that socket:
 //
 //   - X-Forwarded-For is the real client address (tailscaled sets it, never
@@ -38,8 +38,8 @@ import (
 // except the sign-in pages themselves and static assets.
 
 const (
-	sessionCookie = "__Host-ot_session"
-	signinCookie  = "__Host-ot_signin"
+	sessionCookie = "__Host-byname_session"
+	signinCookie  = "__Host-byname_signin"
 	signinTTL     = 10 * time.Minute
 )
 
@@ -122,17 +122,17 @@ func (s *Server) fromDirect(next http.Handler) http.Handler {
 }
 
 // Trusted reports whether ip is a peer the private listener accepts
-// (tailnet, LAN, localhost). cmd/ot uses it to exempt them from the
+// (tailnet, LAN, localhost). cmd/byname uses it to exempt them from the
 // internet connection limits.
 func (s *Server) Trusted(ip netip.Addr) bool { return s.allowedIP(ip.Unmap()) }
 
-// PrivateOrRedirect is the plain-HTTP handler when ot serves its public
+// PrivateOrRedirect is the plain-HTTP handler when byname serves its public
 // domain directly. Peers the private listener accepts (tailnet, LAN) get the
 // private handler, except for requests to the public name; anyone else is
 // sent to the https address. Localhost gets only the health check: anything
 // on this machine that forwarded internet traffic to localhost:80 (a reverse
 // proxy, a tunnel) must not hand the internet the no-login handler. Let's
-// Encrypt's HTTP challenge is answered in front of this (see cmd/ot).
+// Encrypt's HTTP challenge is answered in front of this (see cmd/byname).
 func (s *Server) PrivateOrRedirect() http.Handler {
 	redirect := limits(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Path and query only, always starting with "/": an opaque request

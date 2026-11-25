@@ -1,28 +1,28 @@
-# ot short-link service. Installed by deploy/host/bootstrap.sh; configured by
-# /etc/ot/ot.env (managed) and /etc/ot/ot.local.env (yours), OT_* variables,
-# see `ot serve -h`. --lan-access adds the LAN subnet to IPAddressAllow via
-# the drop-in ot.service.d/10-lan-access.conf.
+# byname short-link service. Installed by deploy/host/bootstrap.sh; configured by
+# /etc/byname/byname.env (managed) and /etc/byname/byname.local.env (yours), BYNAME_* variables,
+# see `byname serve -h`. --lan-access adds the LAN subnet to IPAddressAllow via
+# the drop-in byname.service.d/10-lan-access.conf.
 [Unit]
-Description=ot short links
-After=network-online.target tailscaled.service ot-firewall.service
-Wants=network-online.target tailscaled.service ot-firewall.service
-ConditionPathExists=/usr/local/lib/ot/current/ot
+Description=byname short links
+After=network-online.target tailscaled.service byname-firewall.service
+Wants=network-online.target tailscaled.service byname-firewall.service
+ConditionPathExists=/usr/local/lib/byname/current/byname
 
 [Service]
 Type=simple
-User=ot
-Group=ot
-EnvironmentFile=/etc/ot/ot.env
-EnvironmentFile=-/etc/ot/ot.local.env
+User=byname
+Group=byname
+EnvironmentFile=/etc/byname/byname.env
+EnvironmentFile=-/etc/byname/byname.local.env
 Environment=GOMEMLIMIT=96MiB
-ExecStart=/usr/local/lib/ot/current/ot serve
+ExecStart=/usr/local/lib/byname/current/byname serve
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=15s
 
-# State: /var/lib/ot (database) and /var/lib/ot/snapshots, group-readable so
-# the ot-backup user (in group ot) can upload snapshots.
-StateDirectory=ot ot/snapshots
+# State: /var/lib/byname (database) and /var/lib/byname/snapshots, group-readable so
+# the byname-backup user (in group byname) can upload snapshots.
+StateDirectory=byname byname/snapshots
 StateDirectoryMode=0750
 UMask=0027
 
@@ -63,7 +63,7 @@ SystemCallErrorNumber=EPERM
 # service, plus the LAN subnet if the 10-lan-access.conf drop-in exists. It
 # makes no outbound connections, except with the public address on: the
 # 20-public.conf drop-in (bootstrap.sh --public) allows any address so
-# sign-in can reach Google and Slack, and adds /run/ot for the socket that
+# sign-in can reach Google and Slack, and adds /run/byname for the socket that
 # Tailscale Funnel proxies to. AF_UNIX is for tailscaled.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 IPAddressDeny=any

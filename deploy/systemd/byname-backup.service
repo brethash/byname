@@ -1,26 +1,26 @@
-# Uploads the newest ot snapshot to S3. Runs as its own user, the only
+# Uploads the newest byname snapshot to S3. Runs as its own user, the only
 # process that ever sees the AWS key (delivered via LoadCredential=).
-# Configured by /etc/ot/ot-backup.env: OT_BUCKET, OT_REGION, OT_PREFIX.
+# Configured by /etc/byname/byname-backup.env: BYNAME_BUCKET, BYNAME_REGION, BYNAME_PREFIX.
 [Unit]
-Description=ot backup (upload newest snapshot to S3)
+Description=byname backup (upload newest snapshot to S3)
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=/etc/ot/ot-backup.env
-ConditionPathExists=/etc/credstore/ot-backup-aws
+ConditionPathExists=/etc/byname/byname-backup.env
+ConditionPathExists=/etc/credstore/byname-backup-aws
 
 [Service]
 Type=oneshot
-User=ot-backup
-Group=ot-backup
-SupplementaryGroups=ot
-EnvironmentFile=/etc/ot/ot-backup.env
-LoadCredential=aws:/etc/credstore/ot-backup-aws
+User=byname-backup
+Group=byname-backup
+SupplementaryGroups=byname
+EnvironmentFile=/etc/byname/byname-backup.env
+LoadCredential=aws:/etc/credstore/byname-backup-aws
 Environment=AWS_SHARED_CREDENTIALS_FILE=%d/aws
 Environment=AWS_EC2_METADATA_DISABLED=true
 # Dual-stack S3 endpoints, so IPv6-only cloud servers can reach S3 too.
 Environment=AWS_USE_DUALSTACK_ENDPOINT=true
-ExecStart=/usr/local/lib/ot/current/ot backup --snapshot-dir /var/lib/ot/snapshots --state-file /var/lib/ot-backup/last-upload
-StateDirectory=ot-backup
+ExecStart=/usr/local/lib/byname/current/byname backup --snapshot-dir /var/lib/byname/snapshots --state-file /var/lib/byname-backup/last-upload
+StateDirectory=byname-backup
 StateDirectoryMode=0700
 UMask=0077
 

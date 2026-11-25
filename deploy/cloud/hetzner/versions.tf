@@ -1,5 +1,5 @@
 /**
- * ot on Hetzner Cloud: one small server, IPv6-only, reachable only over Tailscale.
+ * byname on Hetzner Cloud: one small server, IPv6-only, reachable only over Tailscale.
  *
  * The server type is picked at plan time: the first entry of `server_type_preference` (cheapest
  * first) that Hetzner can actually deliver in `location` right now. Hetzner's cheapest lines sell

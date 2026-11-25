@@ -5,7 +5,7 @@
       "Sid": "PutOtBackupsOnly",
       "Effect": "Allow",
       "Action": "s3:PutObject",
-      "Resource": "arn:aws:s3:::BUCKET_NAME/ot/*",
+      "Resource": "arn:aws:s3:::BUCKET_NAME/byname/*",
       "Condition": {
         "StringEquals": { "s3:x-amz-server-side-encryption": "AES256" }
       }

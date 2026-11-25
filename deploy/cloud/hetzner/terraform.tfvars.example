@@ -1,11 +1,11 @@
 # Copy to terraform.tfvars (gitignored). Pass secrets as environment
 # variables instead: TF_VAR_hcloud_token, TF_VAR_tailscale_auth_key.
-name           = "ot"
+name           = "nym"
 location       = "hel1" # cheapest; ash or hil for US latency (€17.99)
 ssh_public_key = "ssh-ed25519 AAAA... you@laptop"
 
 # Without Tailscale: your own domain, IPv4, and SSH from your address only.
-public_domain = "ot.example.com"
+public_domain = "nym.example.com"
 ipv4          = true               # billed separately by Hetzner; needed for a public domain
 ssh_cidrs     = ["203.0.113.7/32"] # curl -s https://checkip.amazonaws.com
 

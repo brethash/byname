@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# ot-restore — replace the live ot database with a snapshot.
+# byname-restore — replace the live byname database with a snapshot.
 #
-#   sudo ot-restore /var/lib/ot/snapshots/ot-20261124T120000.000Z.db
-#   sudo ot-restore ~/ot-20261124T120000.000Z.db.gz     (a backup from S3)
+#   sudo byname-restore /var/lib/byname/snapshots/byname-20261124T120000.000Z.db
+#   sudo byname-restore ~/byname-20261124T120000.000Z.db.gz     (a backup from S3)
 #
 # Takes a safety snapshot of the current database first, so a restore can
-# itself be undone with another ot-restore.
+# itself be undone with another byname-restore.
 set -euo pipefail
 
-DB=/var/lib/ot/ot.db
-SNAPS=/var/lib/ot/snapshots
-BIN=/usr/local/lib/ot/current/ot
+DB=/var/lib/byname/byname.db
+SNAPS=/var/lib/byname/snapshots
+BIN=/usr/local/lib/byname/current/byname
 
-[[ $EUID -eq 0 ]] || { echo "run as root: sudo ot-restore <snapshot>" >&2; exit 1; }
-[[ $# -eq 1 ]] || { echo "usage: sudo ot-restore <snapshot.db | snapshot.db.gz>" >&2; exit 2; }
+[[ $EUID -eq 0 ]] || { echo "run as root: sudo byname-restore <snapshot>" >&2; exit 1; }
+[[ $# -eq 1 ]] || { echo "usage: sudo byname-restore <snapshot.db | snapshot.db.gz>" >&2; exit 2; }
 SRC="$1"
 [[ -f "$SRC" ]] || { echo "no such file: $SRC" >&2; exit 1; }
 
@@ -35,18 +35,18 @@ echo "    ok: $links live links, schema version $schema"
 
 if [[ -f "$DB" ]]; then
   echo "==> safety snapshot of the current database"
-  sudo -u ot "$BIN" snapshot --db "$DB" --snapshot-dir "$SNAPS" --snapshot-keep 30
+  sudo -u byname "$BIN" snapshot --db "$DB" --snapshot-dir "$SNAPS" --snapshot-keep 30
 fi
 
-echo "==> stopping ot"
-systemctl stop ot.service
+echo "==> stopping byname"
+systemctl stop byname.service
 
 echo "==> installing the snapshot"
 rm -f "$DB-wal" "$DB-shm"
-install -o ot -g ot -m 0640 "$CANDIDATE" "$DB"
+install -o byname -g byname -m 0640 "$CANDIDATE" "$DB"
 
-echo "==> starting ot"
-systemctl start ot.service
+echo "==> starting byname"
+systemctl start byname.service
 sleep 2
-systemctl is-active --quiet ot.service || { echo "ot failed to start: journalctl -u ot" >&2; exit 1; }
+systemctl is-active --quiet byname.service || { echo "byname failed to start: journalctl -u byname" >&2; exit 1; }
 echo "restored $SRC ($links live links)"

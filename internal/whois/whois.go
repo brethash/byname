@@ -3,7 +3,7 @@
 // It speaks to tailscaled's LocalAPI over its unix socket. On Linux any local
 // user may make read-only LocalAPI calls (the socket is 0666 and tailscaled
 // grants read permission to unix-socket peers), so the sandboxed, unprivileged
-// ot service can call it. tailscaled rejects requests that carry a Referer or
+// byname service can call it. tailscaled rejects requests that carry a Referer or
 // Origin header or a Host other than "local-tailscaled.sock"; this client sends
 // neither.
 //

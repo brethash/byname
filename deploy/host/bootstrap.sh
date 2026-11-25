@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# bootstrap.sh — harden a fresh Debian host for ot: a Raspberry Pi at home, or
+# bootstrap.sh — harden a fresh Debian host for byname: a Raspberry Pi at home, or
 # a small cloud server (AWS Lightsail, Hetzner) that deploy/cloud created.
 #
 # Run on the host, as root, from a copy of the repo's deploy/ directory:
 #
 #   Pi:     sudo deploy/host/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24 \
-#                [--name ot] [--lan-access --lan-domain lan]
-#   cloud:  sudo deploy/host/bootstrap.sh --admin-user admin [--name ot]
+#                [--name nym] [--lan-access --lan-domain lan]
+#   cloud:  sudo deploy/host/bootstrap.sh --admin-user admin [--name nym]
 #   cloud without Tailscale:
 #           sudo deploy/host/bootstrap.sh --admin-user admin --name hg --no-tailscale \
 #                --ssh-from 203.0.113.7/32 --public-domain hg.example.com
@@ -24,7 +24,7 @@ set -euo pipefail
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TAILNET_NETS="100.64.0.0/10 fd7a:115c:a1e0::/48"
 ADMIN_USER=""
-NAME="ot"
+NAME="nym"
 TAG=""
 PLATFORM=""
 LAN_SUBNET=""
@@ -35,7 +35,7 @@ TAILSCALE=1
 SSH_FROM=""
 FUNNEL=0
 PUBLIC_DOMAIN=""
-PUBLIC_SOCK=/run/ot/public.sock
+PUBLIC_SOCK=/run/byname/public.sock
 REBOOT_NEEDED=0
 
 usage() {
@@ -46,7 +46,7 @@ usage: sudo bootstrap.sh --admin-user USER [--name NAME] [--platform pi|cloud]
                          [--public-domain DOMAIN | --funnel] [--force-firewall]
 
   --admin-user      the account you log in with (must already have an SSH key)
-  --name            the service name people type, e.g. ot for ot/wiki (default: ot).
+  --name            the service name people type, e.g. nym for nym/wiki (default: nym).
                     Also the machine name and the tailnet (MagicDNS) name.
   --tag             Tailscale tag for this host (default: tag:NAME); your tailnet
                     policy must define it
@@ -171,21 +171,21 @@ if [[ $TAILSCALE -eq 0 && "$PLATFORM" == pi && $LAN_ACCESS -eq 0 && -z "$PUBLIC_
   die "without Tailscale, a Pi needs --lan-access or --public-domain: otherwise nobody can use the service"
 fi
 if [[ $PUBLIC -eq 1 ]]; then
-  # Sign-in must be configured before the public address opens: ot refuses
+  # Sign-in must be configured before the public address opens: byname refuses
   # to start with a public address and no way to sign in.
   sysv="$(systemctl --version | awk 'NR==1 {print $2}')"
   [[ "$sysv" =~ ^[0-9]+$ && "$sysv" -ge 254 ]] || die "public access needs systemd 254 or later (ImportCredential); this is ${sysv:-unknown}"
   SIGNIN=""
   for p in google slack; do
     P="${p^^}"
-    grep -Eq "^OT_${P}_CLIENT_ID=.+" /etc/ot/ot.local.env 2>/dev/null || continue
-    [[ -s "/etc/credstore/ot.$p-client-secret" ]] ||
-      die "OT_${P}_CLIENT_ID is set in /etc/ot/ot.local.env, but /etc/credstore/ot.$p-client-secret is missing or empty"
-    if [[ $p == google ]]; then list=OT_GOOGLE_ALLOW; else list=OT_SLACK_TEAMS; fi
-    grep -Eq "^$list=.+" /etc/ot/ot.local.env || die "OT_${P}_CLIENT_ID is set but $list is empty: say who may sign in"
+    grep -Eq "^BYNAME_${P}_CLIENT_ID=.+" /etc/byname/byname.local.env 2>/dev/null || continue
+    [[ -s "/etc/credstore/byname.$p-client-secret" ]] ||
+      die "BYNAME_${P}_CLIENT_ID is set in /etc/byname/byname.local.env, but /etc/credstore/byname.$p-client-secret is missing or empty"
+    if [[ $p == google ]]; then list=BYNAME_GOOGLE_ALLOW; else list=BYNAME_SLACK_TEAMS; fi
+    grep -Eq "^$list=.+" /etc/byname/byname.local.env || die "BYNAME_${P}_CLIENT_ID is set but $list is empty: say who may sign in"
     SIGNIN+=" $p"
   done
-  [[ -n "$SIGNIN" ]] || die "public access needs Google or Slack sign-in in /etc/ot/ot.local.env first (docs/public-access.md)"
+  [[ -n "$SIGNIN" ]] || die "public access needs Google or Slack sign-in in /etc/byname/byname.local.env first (docs/public-access.md)"
 fi
 if [[ "$PLATFORM" == pi ]]; then
   python3 - "$LAN_SUBNET" <<'PY' || die "--lan-subnet must be an IPv4 network like 192.168.1.0/24"
@@ -214,7 +214,7 @@ else
 fi
 if [[ -d /etc/cloud/cloud.cfg.d ]]; then
   # Stop cloud-init from putting the provider's hostname back on reboot.
-  printf '# Managed by ot bootstrap.sh\npreserve_hostname: true\n' > /etc/cloud/cloud.cfg.d/99-ot-hostname.cfg
+  printf '# Managed by byname bootstrap.sh\npreserve_hostname: true\n' > /etc/cloud/cloud.cfg.d/99-byname-hostname.cfg
 fi
 
 # ---------------------------------------------------------------- radios
@@ -227,7 +227,7 @@ if [[ "$PLATFORM" == pi ]]; then
     grep -qxF "$line" "$CONFIG_TXT" || missing+=("$line")
   done
   if [[ ${#missing[@]} -gt 0 ]]; then
-    printf '\n[all]\n# Added by ot bootstrap.sh\n' >> "$CONFIG_TXT"
+    printf '\n[all]\n# Added by byname bootstrap.sh\n' >> "$CONFIG_TXT"
     printf '%s\n' "${missing[@]}" >> "$CONFIG_TXT"
     ok "added to $CONFIG_TXT: ${missing[*]}"
     REBOOT_NEEDED=1
@@ -283,8 +283,8 @@ else
   step "OpenSSH (key-only; reachable as --ssh-from says)"
 fi
 # 01- sorts before any Imager/cloud-init drop-in; sshd keeps the first value.
-cat > /etc/ssh/sshd_config.d/01-ot-hardening.conf <<EOF
-# Managed by ot bootstrap.sh
+cat > /etc/ssh/sshd_config.d/01-byname-hardening.conf <<EOF
+# Managed by byname bootstrap.sh
 PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
@@ -306,8 +306,8 @@ APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 APT::Periodic::AutocleanInterval "7";
 EOF
-cat > /etc/apt/apt.conf.d/52ot-unattended-upgrades <<'EOF'
-// Managed by ot bootstrap.sh: Debian, Raspberry Pi and Tailscale updates.
+cat > /etc/apt/apt.conf.d/52byname-unattended-upgrades <<'EOF'
+// Managed by byname bootstrap.sh: Debian, Raspberry Pi and Tailscale updates.
 Unattended-Upgrade::Origins-Pattern {
   "origin=Debian,codename=${distro_codename},label=Debian";
   "origin=Debian,codename=${distro_codename}-updates,label=Debian";
@@ -325,7 +325,7 @@ ok "daily Debian security, Raspberry Pi and Tailscale updates, reboot at 04:00 w
 
 # ---------------------------------------------------------------- storage
 mkdir -p /etc/systemd/journald.conf.d
-rm -f /etc/systemd/journald.conf.d/10-ot-volatile.conf # older name
+rm -f /etc/systemd/journald.conf.d/10-byname-volatile.conf # older name
 if [[ "$PLATFORM" == pi ]]; then
   step "SD card wear"
   if findmnt -no OPTIONS / | grep -qw noatime; then
@@ -343,9 +343,9 @@ if [[ "$PLATFORM" == pi ]]; then
   else
     ok "no file-backed swap (zram is fine)"
   fi
-  cat > /etc/systemd/journald.conf.d/10-ot-journal.conf <<'EOF'
-# Managed by ot bootstrap.sh: keep the journal in RAM to spare the SD card.
-# ot's audit trail lives in its database, not in logs.
+  cat > /etc/systemd/journald.conf.d/10-byname-journal.conf <<'EOF'
+# Managed by byname bootstrap.sh: keep the journal in RAM to spare the SD card.
+# byname's audit trail lives in its database, not in logs.
 [Journal]
 Storage=volatile
 RuntimeMaxUse=32M
@@ -357,7 +357,7 @@ else
   step "Memory and logs"
   mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
   if [[ -z "$(swapon --show --noheadings 2>/dev/null)" && "$mem_kb" -lt 1500000 ]]; then
-    # 512 MB servers: headroom for apt and unattended-upgrades, not for ot.
+    # 512 MB servers: headroom for apt and unattended-upgrades, not for byname.
     fallocate -l 512M /swapfile
     chmod 0600 /swapfile
     mkswap -q /swapfile
@@ -367,8 +367,8 @@ else
   else
     ok "swap: $(swapon --show=NAME,SIZE --noheadings 2>/dev/null | tr '\n' ' ' || true)${mem_kb:+ ($((mem_kb / 1024)) MB RAM)}"
   fi
-  cat > /etc/systemd/journald.conf.d/10-ot-journal.conf <<'EOF'
-# Managed by ot bootstrap.sh: keep logs across reboots, capped.
+  cat > /etc/systemd/journald.conf.d/10-byname-journal.conf <<'EOF'
+# Managed by byname bootstrap.sh: keep logs across reboots, capped.
 [Journal]
 Storage=persistent
 SystemMaxUse=200M
@@ -379,16 +379,16 @@ fi
 
 # ---------------------------------------------------------------- users/dirs
 step "Users and directories"
-if ! id ot >/dev/null 2>&1; then
-  useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin ot
+if ! id byname >/dev/null 2>&1; then
+  useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin byname
 fi
-if ! id ot-backup >/dev/null 2>&1; then
-  useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin ot-backup
+if ! id byname-backup >/dev/null 2>&1; then
+  useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin byname-backup
 fi
-usermod -aG ot ot-backup
-install -d -m 0755 -o root -g root /usr/local/lib/ot /etc/ot
+usermod -aG byname byname-backup
+install -d -m 0755 -o root -g root /usr/local/lib/byname /etc/byname
 install -d -m 0700 -o root -g root /etc/credstore
-ok "users ot, ot-backup (in group ot); /usr/local/lib/ot, /etc/ot, /etc/credstore"
+ok "users byname, byname-backup (in group byname); /usr/local/lib/byname, /etc/byname, /etc/credstore"
 
 # ---------------------------------------------------------------- config
 step "Service configuration"
@@ -423,7 +423,7 @@ if [[ -n "$PUBLIC_DOMAIN" ]]; then
   PUBLIC_URL="https://$PUBLIC_DOMAIN"
   PUBLIC_LISTEN=":443"
   getent ahosts "$PUBLIC_DOMAIN" >/dev/null 2>&1 ||
-    warn "$PUBLIC_DOMAIN doesn't resolve yet: ot can't get its certificate until its DNS points here"
+    warn "$PUBLIC_DOMAIN doesn't resolve yet: byname can't get its certificate until its DNS points here"
 fi
 if [[ $FUNNEL -eq 1 ]]; then
   [[ -n "$TS_SUFFIX" ]] || die "--funnel: join the tailnet first (tailscale up), then re-run"
@@ -437,16 +437,16 @@ print(((json.load(sys.stdin).get("Self") or {}).get("DNSName") or "").rstrip("."
   PUBLIC_URL="https://$DNS_NAME"
   PUBLIC_LISTEN="unix:$PUBLIC_SOCK"
 fi
-# ot.env is fully managed (rewritten on every run); local overrides go in
-# ot.local.env, which ot.service reads afterwards.
-sed -e "s|@OT_HOSTS@|$HOSTS|" -e "s|@OT_ALLOW_CIDRS@|$ALLOW|" -e "s|@OT_NO_WHOIS@|$NO_WHOIS|" \
-  -e "s|@OT_PUBLIC_URL@|$PUBLIC_URL|" -e "s|@OT_PUBLIC_LISTEN@|$PUBLIC_LISTEN|" \
-  "$DEPLOY_DIR/host/ot.env.in" > /etc/ot/ot.env
-chmod 0644 /etc/ot/ot.env
-[[ -f /etc/ot/ot.local.env ]] || printf '# Local overrides for /etc/ot/ot.env (same OT_* variables). Kept across bootstrap runs.\n' > /etc/ot/ot.local.env
-# What this host is, for ot-verify. Not read by ot itself.
-cat > /etc/ot/host.conf <<EOF
-# Managed by ot bootstrap.sh; read by ot-verify.
+# byname.env is fully managed (rewritten on every run); local overrides go in
+# byname.local.env, which byname.service reads afterwards.
+sed -e "s|@BYNAME_HOSTS@|$HOSTS|" -e "s|@BYNAME_ALLOW_CIDRS@|$ALLOW|" -e "s|@BYNAME_NO_WHOIS@|$NO_WHOIS|" \
+  -e "s|@BYNAME_PUBLIC_URL@|$PUBLIC_URL|" -e "s|@BYNAME_PUBLIC_LISTEN@|$PUBLIC_LISTEN|" \
+  "$DEPLOY_DIR/host/byname.env.in" > /etc/byname/byname.env
+chmod 0644 /etc/byname/byname.env
+[[ -f /etc/byname/byname.local.env ]] || printf '# Local overrides for /etc/byname/byname.env (same BYNAME_* variables). Kept across bootstrap runs.\n' > /etc/byname/byname.local.env
+# What this host is, for byname-verify. Not read by byname itself.
+cat > /etc/byname/host.conf <<EOF
+# Managed by byname bootstrap.sh; read by byname-verify.
 PLATFORM=$PLATFORM
 NAME=$NAME
 TAG=$TAG
@@ -456,52 +456,52 @@ SSH_FROM=$SSH_FROM
 PUBLIC_DOMAIN=$PUBLIC_DOMAIN
 FUNNEL=$FUNNEL
 EOF
-chmod 0644 /etc/ot/host.conf
-ok "wrote /etc/ot/ot.env (OT_HOSTS=$HOSTS)"
+chmod 0644 /etc/byname/host.conf
+ok "wrote /etc/byname/byname.env (BYNAME_HOSTS=$HOSTS)"
 ok "allowed peers: $ALLOW"
 [[ -n "$PUBLIC_URL" ]] && ok "public address $PUBLIC_URL, sign-in with:$SIGNIN"
-[[ $TAILSCALE -eq 0 || -n "$TS_SUFFIX" ]] || warn "tailnet not joined yet; re-run this script after 'tailscale up' to add the full tailnet name to OT_HOSTS"
-# systemd's IP filter for ot.service only allows the tailnet and localhost;
+[[ $TAILSCALE -eq 0 || -n "$TS_SUFFIX" ]] || warn "tailnet not joined yet; re-run this script after 'tailscale up' to add the full tailnet name to BYNAME_HOSTS"
+# systemd's IP filter for byname.service only allows the tailnet and localhost;
 # LAN access adds the LAN subnet in a drop-in.
-install -d -m 0755 /etc/systemd/system/ot.service.d
+install -d -m 0755 /etc/systemd/system/byname.service.d
 if [[ $LAN_ACCESS -eq 1 ]]; then
-  printf '# Managed by ot bootstrap.sh --lan-access\n[Service]\nIPAddressAllow=%s\n' "$LAN_SUBNET" \
-    > /etc/systemd/system/ot.service.d/10-lan-access.conf
-  ok "ot.service accepts $LAN_SUBNET (drop-in 10-lan-access.conf)"
+  printf '# Managed by byname bootstrap.sh --lan-access\n[Service]\nIPAddressAllow=%s\n' "$LAN_SUBNET" \
+    > /etc/systemd/system/byname.service.d/10-lan-access.conf
+  ok "byname.service accepts $LAN_SUBNET (drop-in 10-lan-access.conf)"
 else
-  rm -f /etc/systemd/system/ot.service.d/10-lan-access.conf
+  rm -f /etc/systemd/system/byname.service.d/10-lan-access.conf
 fi
 if [[ $PUBLIC -eq 1 ]]; then
-  cat > /etc/systemd/system/ot.service.d/20-public.conf <<EOF
-# Managed by ot bootstrap.sh (--public-domain or --funnel)
+  cat > /etc/systemd/system/byname.service.d/20-public.conf <<EOF
+# Managed by byname bootstrap.sh (--public-domain or --funnel)
 [Unit]
 # IPAddressAllow=any below also lifts systemd's inbound filter on port 80, so
 # don't run without the firewall.
-Requires=ot-firewall.service
+Requires=byname-firewall.service
 
 [Service]
 # With --funnel, Tailscale Serve/Funnel proxies the public address to
-# $PUBLIC_SOCK. The directory is 0700, so only ot and root (tailscaled) can
-# reach the socket; ot trusts tailscaled's forwarding headers there.
-RuntimeDirectory=ot
+# $PUBLIC_SOCK. The directory is 0700, so only byname and root (tailscaled) can
+# reach the socket; byname trusts tailscaled's forwarding headers there.
+RuntimeDirectory=byname
 RuntimeDirectoryMode=0700
-# Google and Slack client secrets: /etc/credstore/ot.google-client-secret,
-# /etc/credstore/ot.slack-client-secret.
-ImportCredential=ot.*
+# Google and Slack client secrets: /etc/credstore/byname.google-client-secret,
+# /etc/credstore/byname.slack-client-secret.
+ImportCredential=byname.*
 # Sign-in calls Google's and Slack's token endpoints, and --public-domain
-# serves the internet and fetches certificates from Let's Encrypt, so ot needs
+# serves the internet and fetches certificates from Let's Encrypt, so byname needs
 # internet access. What reaches it is still limited by the firewall (which
-# the unit requires) and by ot's own checks.
+# the unit requires) and by byname's own checks.
 IPAddressAllow=any
 EOF
-  ok "ot.service: credentials, internet access, requires the firewall (drop-in 20-public.conf)"
+  ok "byname.service: credentials, internet access, requires the firewall (drop-in 20-public.conf)"
 else
-  rm -f /etc/systemd/system/ot.service.d/20-public.conf
+  rm -f /etc/systemd/system/byname.service.d/20-public.conf
 fi
-install -m 0644 "$DEPLOY_DIR/host/ot-backup.env.example" /etc/ot/ot-backup.env.example
+install -m 0644 "$DEPLOY_DIR/host/byname-backup.env.example" /etc/byname/byname-backup.env.example
 
 # ---------------------------------------------------------------- firewall
-step "Firewall (nftables, table inet ot_filter)"
+step "Firewall (nftables, table inet byname_filter)"
 if [[ $LAN_ACCESS -eq 1 ]]; then
   LAN_HTTP_RULE="ip saddr $LAN_SUBNET tcp dport 80 accept"
 else
@@ -544,8 +544,8 @@ else
 fi
 sed -e "s|@SSH_RULE@|$SSH_RULE|" -e "s|@LAN_HTTP_RULE@|$LAN_HTTP_RULE|" \
   -e "s|@TAILNET_RULES@|$TAILNET_RULES|" -e "s|@PUBLIC_RULE@|$PUBLIC_RULE|" \
-  "$DEPLOY_DIR/host/firewall.nft.in" > /etc/ot/firewall.nft.new
-nft -c -f /etc/ot/firewall.nft.new || die "firewall rules failed to parse"
+  "$DEPLOY_DIR/host/firewall.nft.in" > /etc/byname/firewall.nft.new
+nft -c -f /etc/byname/firewall.nft.new || die "firewall rules failed to parse"
 # Lockout guard: an OpenSSH session from an address the new rules don't allow
 # would survive (it is established) but you could not reconnect. sudo strips
 # SSH_CLIENT, so look at the live connections instead. Tailscale SSH sessions
@@ -566,17 +566,17 @@ for line in sys.stdin:
         print(ip)
 ' $SSH_NETS)"
   if [[ -n "$outside" ]]; then
-    rm -f /etc/ot/firewall.nft.new
+    rm -f /etc/byname/firewall.nft.new
     die "OpenSSH session(s) from outside ${SSH_NETS// /, }: $outside — fix --lan-subnet or --ssh-from, use Tailscale SSH, or pass --force-firewall"
   fi
 fi
-mv /etc/ot/firewall.nft.new /etc/ot/firewall.nft
+mv /etc/byname/firewall.nft.new /etc/byname/firewall.nft
 # Debian's nftables.service flushes the whole ruleset (including tailscaled's).
 systemctl disable --now nftables.service >/dev/null 2>&1 || true
-install -m 0644 "$DEPLOY_DIR/systemd/ot-firewall.service" /etc/systemd/system/ot-firewall.service
+install -m 0644 "$DEPLOY_DIR/systemd/byname-firewall.service" /etc/systemd/system/byname-firewall.service
 systemctl daemon-reload
-systemctl enable ot-firewall.service >/dev/null 2>&1
-systemctl restart ot-firewall.service
+systemctl enable byname-firewall.service >/dev/null 2>&1
+systemctl restart byname-firewall.service
 if [[ "$PLATFORM" == cloud ]]; then
   allowed=""
   [[ $TAILSCALE -eq 1 ]] && allowed+="tcp/80 and tcp/22 on tailscale0, udp/41641, "
@@ -591,28 +591,28 @@ fi
 
 # ---------------------------------------------------------------- units
 step "systemd units"
-for unit in ot.service ot-backup.service ot-backup.timer; do
+for unit in byname.service byname-backup.service byname-backup.timer; do
   install -m 0644 "$DEPLOY_DIR/systemd/$unit" "/etc/systemd/system/$unit"
 done
-install -m 0755 "$DEPLOY_DIR/host/verify.sh" /usr/local/sbin/ot-verify
-install -m 0755 "$DEPLOY_DIR/host/restore.sh" /usr/local/sbin/ot-restore
+install -m 0755 "$DEPLOY_DIR/host/verify.sh" /usr/local/sbin/byname-verify
+install -m 0755 "$DEPLOY_DIR/host/restore.sh" /usr/local/sbin/byname-restore
 systemctl daemon-reload
-systemctl enable ot.service >/dev/null 2>&1
-# Pick up env/drop-in changes if ot is already running.
-systemctl try-restart ot.service
-ok "ot.service enabled (starts once a binary is deployed)"
-if [[ -f /etc/ot/ot-backup.env && -f /etc/credstore/ot-backup-aws ]]; then
-  systemctl enable --now ot-backup.timer >/dev/null 2>&1
-  ok "ot-backup.timer enabled"
+systemctl enable byname.service >/dev/null 2>&1
+# Pick up env/drop-in changes if byname is already running.
+systemctl try-restart byname.service
+ok "byname.service enabled (starts once a binary is deployed)"
+if [[ -f /etc/byname/byname-backup.env && -f /etc/credstore/byname-backup-aws ]]; then
+  systemctl enable --now byname-backup.timer >/dev/null 2>&1
+  ok "byname-backup.timer enabled"
 else
   ok "backups not configured yet (see docs/operations.md, 'Backups')"
 fi
-ok "installed ot-verify and ot-restore to /usr/local/sbin"
+ok "installed byname-verify and byname-restore to /usr/local/sbin"
 
 # ---------------------------------------------------------------- public
 if [[ $FUNNEL -eq 1 ]]; then
   step "Public address (Tailscale Funnel)"
-  # Funnel to ot's socket; also answers tailnet devices on https://. The
+  # Funnel to byname's socket; also answers tailnet devices on https://. The
   # timeout stops a first-time consent prompt from hanging this script.
   if ! out="$(timeout 60 tailscale funnel --bg --yes --https=443 "unix:$PUBLIC_SOCK" 2>&1)"; then
     printf '%s\n' "$out" | sed 's/^/    /'
@@ -627,7 +627,7 @@ elif command -v tailscale >/dev/null 2>&1 && tailscale funnel status 2>/dev/null
 fi
 if [[ -n "$PUBLIC_DOMAIN" ]]; then
   step "Public address (your domain)"
-  ok "$PUBLIC_URL: ot gets its certificate from Let's Encrypt on the first visit; everyone signs in"
+  ok "$PUBLIC_URL: byname gets its certificate from Let's Encrypt on the first visit; everyone signs in"
 fi
 
 # ---------------------------------------------------------------- summary
@@ -637,7 +637,7 @@ if [[ $TAILSCALE -eq 1 ]] && ! tailscale status >/dev/null 2>&1; then
     cat <<EOF
     1. Join the tailnet (opens a login URL; your policy must define $TAG first):
          sudo tailscale up --ssh --hostname=$NAME --advertise-tags=$TAG
-    2. Re-run this script so OT_HOSTS includes the full tailnet name.
+    2. Re-run this script so BYNAME_HOSTS includes the full tailnet name.
 EOF
   else
     warn "Tailscale is not connected; first boot should have joined it (see /var/log/cloud-init-output.log)"
@@ -649,7 +649,7 @@ if [[ $TAILSCALE -eq 1 ]]; then
 else
   echo "    * Deploy from your Mac:  make deploy TARGET=$ADMIN_USER@${PUBLIC_DOMAIN:-SERVER-ADDRESS}"
 fi
-echo "    * Then check everything: sudo ot-verify"
+echo "    * Then check everything: sudo byname-verify"
 if [[ $PUBLIC -eq 1 ]]; then
   echo "    * From a phone with Wi-Fi and Tailscale off, open $PUBLIC_URL/_/whoami: it should ask you to sign in"
 fi

@@ -14,8 +14,8 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"otterly-go/internal/store"
-	"otterly-go/internal/whois"
+	"byname/internal/store"
+	"byname/internal/whois"
 )
 
 // Request limits.
@@ -54,7 +54,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		// same-origin, not no-referrer: under no-referrer, browsers send
 		// "Origin: null" on form POSTs, and over plain HTTP (no
-		// Sec-Fetch-Site) CrossOriginProtection would then reject ot's own
+		// Sec-Fetch-Site) CrossOriginProtection would then reject byname's own
 		// forms. same-origin still sends no Referer to any other site,
 		// including redirect destinations.
 		h.Set("Referrer-Policy", "same-origin")

@@ -1,4 +1,4 @@
-module otterly-go
+module byname
 
 go 1.27.4
 

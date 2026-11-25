@@ -1,0 +1,19 @@
+# Loads byname's nftables table. Deliberately NOT Debian's nftables.service, whose
+# /etc/nftables.conf starts with "flush ruleset" and would wipe tailscaled's
+# own rules. This only ever touches table inet byname_filter.
+[Unit]
+Description=byname firewall (nftables table inet byname_filter)
+DefaultDependencies=no
+Before=network-pre.target
+Wants=network-pre.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/byname/firewall.nft
+ExecReload=/usr/sbin/nft -f /etc/byname/firewall.nft
+ExecStop=/usr/sbin/nft delete table inet byname_filter
+
+[Install]
+WantedBy=multi-user.target

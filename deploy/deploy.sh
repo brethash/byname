@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2029 # $STAGE is deliberately expanded locally; it is a path mktemp made on the host.
-# deploy.sh — ship the ot binary to a host (Pi or cloud server) and switch to
+# deploy.sh — ship the byname binary to a host (Pi or cloud server) and switch to
 # it, rolling back automatically if the new version fails its health check.
 #
-#   deploy/deploy.sh <ssh-target> <version>      (normally via: make deploy TARGET=you@ot)
+#   deploy/deploy.sh <ssh-target> <version>      (normally via: make deploy TARGET=you@nym)
 #
-# Runs on your Mac. Uses plain ssh, so Tailscale SSH (ssh you@ot) works. Picks
-# bin/ot-linux-arm64 or bin/ot-linux-amd64 to match the host.
+# Runs on your Mac. Uses plain ssh, so Tailscale SSH (ssh you@nym) works. Picks
+# bin/byname-linux-arm64 or bin/byname-linux-amd64 to match the host.
 set -euo pipefail
 
 TARGET="${1:?usage: deploy.sh <ssh-target> <version>}"
@@ -25,19 +25,19 @@ case "$MACHINE" in
   x86_64|amd64) ARCH=amd64 ;;
   *) echo "unsupported architecture on $TARGET: $MACHINE" >&2; exit 1 ;;
 esac
-BIN="$ROOT/bin/ot-linux-$ARCH"
+BIN="$ROOT/bin/byname-linux-$ARCH"
 [[ -f "$BIN" ]] || { echo "missing $BIN; run: make build-linux" >&2; exit 1; }
 
 SHA="$(shasum -a 256 "$BIN" | cut -d' ' -f1)"
-echo "==> deploying ot $VERSION ($ARCH, sha256 $SHA) to $TARGET"
+echo "==> deploying byname $VERSION ($ARCH, sha256 $SHA) to $TARGET"
 
 # Stage files in a private temp dir on the host.
-STAGE="$(ssh "$TARGET" 'mktemp -d /tmp/ot-deploy.XXXXXX')"
-ssh "$TARGET" "cat > '$STAGE/ot'" < "$BIN"
+STAGE="$(ssh "$TARGET" 'mktemp -d /tmp/byname-deploy.XXXXXX')"
+ssh "$TARGET" "cat > '$STAGE/byname'" < "$BIN"
 for f in install.sh verify.sh restore.sh; do
   ssh "$TARGET" "cat > '$STAGE/$f'" < "$ROOT/deploy/host/$f"
 done
-for f in ot.service ot-backup.service ot-backup.timer ot-firewall.service; do
+for f in byname.service byname-backup.service byname-backup.timer byname-firewall.service; do
   ssh "$TARGET" "cat > '$STAGE/$f'" < "$ROOT/deploy/systemd/$f"
 done
 

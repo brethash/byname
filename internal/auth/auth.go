@@ -1,4 +1,4 @@
-// Package auth signs people in with Google or Slack on ot's public address,
+// Package auth signs people in with Google or Slack on byname's public address,
 // using the OpenID Connect authorization-code flow as a confidential client.
 //
 // ID tokens come straight from the provider's token endpoint, over TLS, in a
@@ -360,7 +360,7 @@ func (p *Provider) check(t idToken, nonce string, now time.Time) error {
 	return nil
 }
 
-// idToken is the subset of ID token claims ot reads.
+// idToken is the subset of ID token claims byname reads.
 type idToken struct {
 	Iss           string      `json:"iss"`
 	Sub           string      `json:"sub"`

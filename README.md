@@ -1,6 +1,7 @@
-# ot/
+# byname
 
-Household (or team) short links: `ot/wiki`, `ot/gh/otterly`. They're
+Short links by name, for a household or a small team: `nym/wiki`,
+`nym/gh/octocat`. They're
 served from a Raspberry Pi 3B at home or from a $3.50–$5.00/month cloud
 server. People reach them on any of three paths:
 
@@ -11,16 +12,17 @@ server. People reach them on any of three paths:
 
 Tailscale is optional.
 
-`ot` is the default name. Choose your own (`go/wiki`, `links/wiki`) with one
-setting: `bootstrap.sh --name go`, or `name = "go"` in `deploy/cloud`.
+`nym` is the default prefix people type. Choose your own (`go/wiki`,
+`hg/wiki`) with one setting: `bootstrap.sh --name hg`, or `name = "hg"` in
+`deploy/cloud`.
 
-- **On the tailnet, no logins.** Tailscale MagicDNS resolves `ot` on every
+- **On the tailnet, no logins.** Tailscale MagicDNS resolves `nym` on every
   device running Tailscale, and WireGuard encrypts that traffic. Anyone on
   the tailnet can create or edit a link. Every change records who made it
   (Tailscale WhoIs), and any earlier version can be restored with one click.
 - **On the home network, optionally.** With `--lan-access` on a Pi,
   home-network devices without Tailscale can use it too, over plain HTTP and
-  identified by IP address; router DNS resolves `ot` for them.
+  identified by IP address; router DNS resolves `nym` for them.
 - **On the internet, with sign-in.** Serve your own domain
   (`https://hg.example.com`, Let's Encrypt certificate; no Tailscale needed),
   or publish the tailnet name through Tailscale Funnel. People there sign in
@@ -34,12 +36,12 @@ setting: `bootstrap.sh --name go`, or `name = "go"` in `deploy/cloud`.
 
 | You type | You get |
 |---|---|
-| `ot/` | home: search, create, popular, recent changes |
-| `ot/wiki` | redirect to the link's destination |
-| `ot/wiki/some/page?x=1` | the destination with `/some/page?x=1` appended |
-| `ot/gh/otterly` | template `https://github.com/{1}` → `https://github.com/otterly` |
-| `ot/wiki+` | the link's details and history, without redirecting |
-| `ot/nope` | "doesn't exist yet", with a create form |
+| `nym/` | home: search, create, popular, recent changes |
+| `nym/wiki` | redirect to the link's destination |
+| `nym/wiki/some/page?x=1` | the destination with `/some/page?x=1` appended |
+| `nym/gh/octocat` | template `https://github.com/{1}` → `https://github.com/octocat` |
+| `nym/wiki+` | the link's details and history, without redirecting |
+| `nym/nope` | "doesn't exist yet", with a create form |
 
 Browser setup notes: [docs/client-setup.md](docs/client-setup.md).
 
@@ -54,7 +56,7 @@ make fuzz     # fuzz URL validation and template expansion
 ```
 
 ```
-cmd/ot/            serve | snapshot | backup | export | import | sessions | version
+cmd/byname/        serve | snapshot | backup | export | import | sessions | version
 internal/link/     names, destination validation, template expansion (+ fuzz tests)
 internal/store/    SQLite: links, append-only audit log, snapshots
 internal/app/      validation, click batching, snapshot scheduling
@@ -82,7 +84,7 @@ troubleshooting. [docs/cloud.md](docs/cloud.md) covers the cloud servers and
 moving between hosts.
 
 ```sh
-make deploy TARGET=<you>@ot      # builds arm64 + amd64, ships the one the host needs
+make deploy TARGET=<you>@nym      # builds arm64 + amd64, ships the one the host needs
 ```
 
 ## Security
@@ -91,7 +93,7 @@ Every request on the plain-HTTP address passes these checks before any
 handler runs:
 
 1. the peer must be a tailnet address (or the home LAN with `--lan-access`);
-2. `Host` must be one of `OT_HOSTS` (blocks DNS rebinding);
+2. `Host` must be one of `BYNAME_HOSTS` (blocks DNS rebinding);
 3. request size limits;
 4. `Origin` must match on every write (Go's `CrossOriginProtection`);
 5. strict CSP and related headers on every response;
@@ -109,7 +111,7 @@ session from an allow-listed Google or Slack account. Sessions are
 server-side, in `__Host-` cookies that are Secure, HttpOnly and
 SameSite=Lax.
 
-- **Your own domain**: ot terminates TLS itself, with a Let's Encrypt
+- **Your own domain**: byname terminates TLS itself, with a Let's Encrypt
   certificate for that one name. It trusts no proxy headers, and treats
   every request there as coming from the internet.
 - **Funnel**: requests arrive over a socket that only Tailscale can open, and

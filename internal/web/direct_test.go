@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"otterly-go/internal/auth"
+	"byname/internal/auth"
 )
 
 const directURL = "https://hg.example.com"

@@ -1,5 +1,5 @@
 [Unit]
-Description=Hourly ot backup to S3 (uploads only when a new snapshot exists)
+Description=Hourly byname backup to S3 (uploads only when a new snapshot exists)
 
 [Timer]
 OnCalendar=hourly

@@ -9,18 +9,18 @@ import (
 	"testing"
 	"time"
 
-	"otterly-go/internal/link"
-	"otterly-go/internal/store"
+	"byname/internal/link"
+	"byname/internal/store"
 )
 
 func newTest(t *testing.T, cfg Config) *Service {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "ot.db"))
+	st, err := store.Open(filepath.Join(t.TempDir(), "byname.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	cfg.SelfHosts = []string{"ot"}
+	cfg.SelfHosts = []string{"nym"}
 	cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	return New(st, cfg)
 }
@@ -39,7 +39,7 @@ func TestCreateValidates(t *testing.T) {
 	if !errors.As(err, &fe) || fe.Field != "target" || !errors.Is(err, link.ErrTargetScheme) {
 		t.Fatalf("err = %v", err)
 	}
-	_, err = s.Create(ctx, Input{Name: "loop", Target: "http://ot/loop"}, who)
+	_, err = s.Create(ctx, Input{Name: "loop", Target: "http://nym/loop"}, who)
 	if !errors.Is(err, link.ErrTargetSelf) {
 		t.Fatalf("err = %v", err)
 	}

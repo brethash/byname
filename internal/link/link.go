@@ -65,7 +65,7 @@ func ParseName(raw string) (string, error) {
 }
 
 // Key is the lookup key for a name: lower case with '-', '_' and '.' removed,
-// so ot/Wiki-Home, ot/wiki_home and ot/wikihome are the same link.
+// so nym/Wiki-Home, nym/wiki_home and nym/wikihome are the same link.
 func Key(name string) string {
 	var b strings.Builder
 	b.Grow(len(name))
@@ -206,8 +206,8 @@ func stripPort(hostport string) string {
 
 // Expand turns a stored target into the redirect destination.
 //
-//   - rest is the escaped path after the link name ("" for ot/name), e.g.
-//     "some/page%20two" for ot/name/some/page%20two.
+//   - rest is the escaped path after the link name ("" for nym/name), e.g.
+//     "some/page%20two" for nym/name/some/page%20two.
 //   - rawQuery is the request's query string, appended to the destination's.
 //
 // A target with placeholders substitutes {1}..{9} with path segments and {*}
@@ -236,7 +236,7 @@ func Expand(target, rest, rawQuery string, selfHosts []string) (string, error) {
 }
 
 // splitRest splits the escaped rest-of-path into unescaped segments, dropping
-// empty ones (ot/name//x == ot/name/x).
+// empty ones (nym/name//x == nym/name/x).
 func splitRest(rest string) ([]string, error) {
 	if rest == "" {
 		return nil, nil

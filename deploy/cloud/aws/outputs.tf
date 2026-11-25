@@ -43,7 +43,7 @@ output "next_steps" {
     "scp -r deploy admin@${var.name}:",
     "ssh admin@${var.name} '${local.bootstrap}'",
     "make deploy TARGET=admin@${var.name}",
-    "ssh admin@${var.name} sudo ot-verify",
+    "ssh admin@${var.name} sudo byname-verify",
     local.public ? "# then sign-in and --public-domain ${var.public_domain}: docs/public-access.md" : "",
     ])) : join("\n", [
     "# 1. DNS: create the records in dns_records, then wait for them to resolve.",
@@ -52,7 +52,7 @@ output "next_steps" {
     "# 2. Sign-in settings and secret on the server: docs/public-access.md",
     "ssh admin@${local.ssh_host} '${local.bootstrap} --public-domain ${var.public_domain}'",
     "make deploy TARGET=admin@${local.ssh_host}",
-    "ssh admin@${local.ssh_host} sudo ot-verify",
+    "ssh admin@${local.ssh_host} sudo byname-verify",
   ])
 }
 

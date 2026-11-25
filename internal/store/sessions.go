@@ -49,7 +49,7 @@ func (s *Store) CreateSession(ctx context.Context, tokenHash []byte, x Session) 
 		return err
 	}
 	if n >= maxSessions {
-		return errors.New("too many sessions; revoke some with `ot sessions revoke`")
+		return errors.New("too many sessions; revoke some with `byname sessions revoke`")
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO sessions
 		(token_hash, provider, subject, email, name, org, ip, created_at, expires_at)

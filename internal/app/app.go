@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"otterly-go/internal/link"
-	"otterly-go/internal/store"
+	"byname/internal/link"
+	"byname/internal/store"
 )
 
 // Config tunes the service.
@@ -264,7 +264,7 @@ func (s *Service) snapshotLogged(ctx context.Context) {
 	s.log.Info("snapshot written", "path", path)
 }
 
-const snapPrefix, snapSuffix = "ot-", ".db"
+const snapPrefix, snapSuffix = "byname-", ".db"
 
 // SnapshotName returns the file name for a snapshot taken at t. Names sort
 // chronologically.

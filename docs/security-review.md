@@ -1,27 +1,27 @@
-# OWASP review: ot v1 (2026-11-24)
+# OWASP review: byname v1 (2026-11-24)
 
 Scope: the Go service (`cmd/`, `internal/`), the Pi deployment
 (`deploy/`), and the threat model in the plan: a household tailnet, no logins,
 plain HTTP inside WireGuard. Method: OWASP Top 10:2025 checklist, a pattern
 sweep of the code, and attack replays in real headless Chrome against a
-non-localhost origin, which is the condition `http://ot` runs in.
+non-localhost origin, which is the condition `http://nym` runs in.
 
 ## Fixed during the review
 
 | # | Category | Finding | Fix |
 |---|---|---|---|
-| 1 | A01 / A06 | **Every form in the UI would have been rejected in production.** `Referrer-Policy: no-referrer` makes browsers send `Origin: null` on form POSTs. Over plain HTTP there is no `Sec-Fetch-Site`, so `CrossOriginProtection` blocked ot's own forms. Unit tests passed because they set `Origin` by hand, and a `localhost` browser test passed because localhost counts as a secure context. Reproduced in Chrome on a non-localhost origin. | Policy changed to `same-origin` (header and meta tag). Other sites, including redirect destinations, still receive no Referer. Re-verified in Chrome. |
-| 2 | A06 | **Audit-log growth by a compromised device.** 30 writes/min per device allowed about 43k audited changes a day, up to ~200 MB a day, enough to fill the SD card within days. | Per-device daily budget (`--write-daily`, default 300), checked atomically with the short-term limit (refunded if the short limit refuses). `/_/healthz` reports `disk_free_mb` and `low_disk`; `ot-verify` fails on low disk. |
+| 1 | A01 / A06 | **Every form in the UI would have been rejected in production.** `Referrer-Policy: no-referrer` makes browsers send `Origin: null` on form POSTs. Over plain HTTP there is no `Sec-Fetch-Site`, so `CrossOriginProtection` blocked byname's own forms. Unit tests passed because they set `Origin` by hand, and a `localhost` browser test passed because localhost counts as a secure context. Reproduced in Chrome on a non-localhost origin. | Policy changed to `same-origin` (header and meta tag). Other sites, including redirect destinations, still receive no Referer. Re-verified in Chrome. |
+| 2 | A06 | **Audit-log growth by a compromised device.** 30 writes/min per device allowed about 43k audited changes a day, up to ~200 MB a day, enough to fill the SD card within days. | Per-device daily budget (`--write-daily`, default 300), checked atomically with the short-term limit (refunded if the short limit refuses). `/_/healthz` reports `disk_free_mb` and `low_disk`; `byname-verify` fails on low disk. |
 | 3 | A01 | **Link cap bypass.** Restore, revert-to-deleted and import skipped the live-link cap. Found by automated commit review. | The store enforces the cap inside the transaction on every path that makes a link live; regression test covers all four. |
 
 ## Verified controls
 
 | Category | Control | Evidence |
 |---|---|---|
-| A01 Access control | Tailnet-only peers (nftables, systemd `IPAddressAllow`, app check); Host allowlist; deny by default | `TestOnlyTailnetPeers`, `TestHostAllowlist`, `ot-verify` |
+| A01 Access control | Tailnet-only peers (nftables, systemd `IPAddressAllow`, app check); Host allowlist; deny by default | `TestOnlyTailnetPeers`, `TestHostAllowlist`, `byname-verify` |
 | A01 CSRF | `CrossOriginProtection` on every non-GET; JSON API requires `application/json`; no CORS; GET never mutates | Chrome replay: auto-submitted form 403, `no-cors` `text/plain` fetch 403, JSON fetch stopped at preflight (405, no CORS); `TestCrossOriginWritesBlocked`, `TestGETNeverMutates` |
-| A01 DNS rebinding | Host allowlist → 421 | `TestHostAllowlist`, `ot-verify` |
-| A02 Misconfiguration | CSP (`default-src 'none'`, no inline script), nosniff, frame-ancestors none, no directory listing, server timeouts, size limits, systemd sandbox (target exposure ≤ 2.0) | `TestSecurityHeadersEverywhere`, `TestLimits`, `ot-verify` |
+| A01 DNS rebinding | Host allowlist → 421 | `TestHostAllowlist`, `byname-verify` |
+| A02 Misconfiguration | CSP (`default-src 'none'`, no inline script), nosniff, frame-ancestors none, no directory listing, server timeouts, size limits, systemd sandbox (target exposure ≤ 2.0) | `TestSecurityHeadersEverywhere`, `TestLimits`, `byname-verify` |
 | A03 Supply chain | 3 runtime modules, pinned `go.sum`, `govulncheck` and `staticcheck` pinned as Go tools in the gate, static `-trimpath` build, sha256 checked on deploy, signed Tailscale apt repo | `make gate` → "No vulnerabilities found" |
 | A04 Crypto | Transport is WireGuard (Tailscale); S3 over TLS with SSE-S3 enforced by IAM condition; no passwords stored | `deploy/aws/iam-policy.json` |
 | A05 Injection | All SQL values bound; the only concatenated SQL pieces are constants, a switch-selected `ORDER BY`, and integer `LIMIT`s; LIKE wildcards escaped; `html/template` everywhere (no `template.HTML`); no `os/exec`; shell scripts quote variables and validate inputs before `sed` | pattern sweep; `TestStoredXSSIsEscaped`; shellcheck clean |
@@ -34,10 +34,10 @@ non-localhost origin, which is the condition `http://ot` runs in.
 
 ## Change after the review: LAN access (2026-11-24)
 
-You chose to let home-network devices without Tailscale use ot, including
+You chose to let home-network devices without Tailscale use byname, including
 creating and editing links. It's opt-in (`bootstrap.sh --lan-access`) and
 opens three layers together: an nftables rule for tcp/80 from the LAN
-subnet, a systemd `IPAddressAllow` drop-in, and `OT_ALLOW_CIDRS`. `ot-verify`
+subnet, a systemd `IPAddressAllow` drop-in, and `BYNAME_ALLOW_CIDRS`. `byname-verify`
 fails if they disagree. Everything else still applies to LAN requests: the
 Host allowlist, cross-origin protection, limits, audit log and revert
 (`TestLANAccessWhenConfigured`).
@@ -45,7 +45,7 @@ Host allowlist, cross-origin protection, limits, audit log and revert
 What it costs:
 
 - **Cleartext on the LAN.** Another device on the home network (a compromised
-  IoT gadget, say) could sniff LAN-side ot traffic or, with ARP spoofing,
+  IoT gadget, say) could sniff LAN-side byname traffic or, with ARP spoofing,
   alter redirects. Tailscale traffic stays encrypted.
 - **Any LAN device can edit links**, including the devices most likely to be
   compromised.
@@ -58,12 +58,12 @@ What it costs:
   signed-in accounts keep their own.
 
 Mitigations worth doing: put IoT devices and guests on an isolated guest
-Wi-Fi/VLAN so they are outside `--lan-subnet`, and check `ot/_/activity` now
+Wi-Fi/VLAN so they are outside `--lan-subnet`, and check `nym/_/activity` now
 and then.
 
 ## Cloud hosting (2026-11-24)
 
-ot can now run on an AWS Lightsail or Hetzner Cloud server
+byname can now run on an AWS Lightsail or Hetzner Cloud server
 ([cloud.md](cloud.md)). The app and its request checks are unchanged. What
 changes is where it runs and who else can reach the machine.
 
@@ -72,10 +72,10 @@ Lightsail instance has AWS's default SSH/HTTP rules for the minute before
 OpenTofu replaces them; sshd is key-only.) The provider's firewall (Lightsail
 public ports, a Hetzner firewall) and nftables each allow only UDP 41641 in
 from the internet. That is Tailscale's WireGuard port, which never answers a
-packet from an unknown peer. Port 80 (ot) and port 22 (OpenSSH, as a fallback
+packet from an unknown peer. Port 80 (byname) and port 22 (OpenSSH, as a fallback
 to Tailscale SSH) are accepted only on `tailscale0`. The app's source check
 and systemd's `IPAddressAllow` are the same as on the Pi. LAN access can't be
-turned on: `bootstrap.sh` refuses it on a cloud server and `ot-verify` fails
+turned on: `bootstrap.sh` refuses it on a cloud server and `byname-verify` fails
 if it finds it. Servers are IPv6-only by default, so there is no IPv4
 address to scan.
 
@@ -101,10 +101,10 @@ address to scan.
 
 **Not verified yet:** a real first boot on either provider, which would
 exercise cloud-init and the Tailscale join with IPv6 only. On the server,
-`ot-verify` checks the rest.
+`byname-verify` checks the rest.
 
 **Custom service name.** `bootstrap.sh` and OpenTofu both require the name
-to be a DNS label starting with a letter. It becomes the first `OT_HOSTS`
+to be a DNS label starting with a letter. It becomes the first `BYNAME_HOSTS`
 entry, so the Host allowlist works as before. The generated favicon escapes
 it. No new risk.
 
@@ -117,13 +117,13 @@ Slack, and only accounts on the allow list get in.
 
 **Exposure.** Still no public port on the host. Funnel traffic comes in over
 the tailnet: Tailscale's ingress relays, then WireGuard to the host. The
-host's tailscaled terminates TLS and proxies to ot over
-`/run/ot/public.sock`. That directory is 0700 and the socket 0600, both owned by ot, so only
-root (tailscaled) and ot can connect. Anyone on the internet can now reach
+host's tailscaled terminates TLS and proxies to byname over
+`/run/byname/public.sock`. That directory is 0700 and the socket 0600, both owned by byname, so only
+root (tailscaled) and byname can connect. Anyone on the internet can now reach
 the sign-in page, the static assets and the favicon. Everything else needs
 a session.
 
-**Trust boundary.** On that socket only, ot reads three headers that
+**Trust boundary.** On that socket only, byname reads three headers that
 tailscaled sets: `X-Forwarded-For` (the real client address; tailscaled
 overwrites it rather than appending), `X-Forwarded-Host`, and
 `Tailscale-Funnel-Request`, which marks internet requests (tailscaled deletes
@@ -137,27 +137,27 @@ ignored.
 | Control | How |
 |---|---|
 | Sign-in | OpenID Connect authorization-code flow as a confidential client. Google uses PKCE (S256). Slack doesn't advertise PKCE, so state, nonce and the client secret protect its flow. |
-| ID tokens | Taken straight from the token endpoint over TLS, in a request authenticated with the client secret. The signature isn't checked, which OIDC Core §3.1.3.7(6) allows for tokens received this way. ot checks issuer, audience (and `azp` when there are several audiences), expiry and issue time with 2 minutes of skew, and the nonce (constant-time). It accepts only a verified email address. |
+| ID tokens | Taken straight from the token endpoint over TLS, in a request authenticated with the client secret. The signature isn't checked, which OIDC Core §3.1.3.7(6) allows for tokens received this way. byname checks issuer, audience (and `azp` when there are several audiences), expiry and issue time with 2 minutes of skew, and the nonce (constant-time). It accepts only a verified email address. |
 | Who gets in | Google: listed addresses, or Workspace domains matched on the `hd` claim, never on the address suffix. A listed address counts only where Google vouches for it: Gmail, or an account in that address's Workspace domain. Slack: workspace IDs. Checked at sign-in and again on every request, so removing someone signs them out. |
-| Login CSRF | `state`, nonce, PKCE verifier, destination and expiry (10 minutes) are sealed with AES-256-GCM, using a key made at startup, into a `__Host-ot_signin` cookie. The server keeps nothing per sign-in. The callback's `state` must match the browser's own cookie (constant time). A mismatched callback is refused and leaves that cookie alone, so it can't cancel a real sign-in. The cookie is cleared once used, and the provider refuses a replayed code. |
-| Sessions | A 256-bit random token in a `__Host-ot_session` cookie: Secure, HttpOnly, SameSite=Lax, 30 days. The database stores only its SHA-256, so snapshots and backups can't be used to sign in. Sign-out deletes the row. A new sign-in replaces any old session. Each account keeps at most 10 sessions; older ones are dropped. `ot sessions revoke` ends sessions from the host. |
-| Open redirects | After sign-in ot returns only to a local path. `//host`, `/\host`, control characters and the sign-in pages are refused. |
+| Login CSRF | `state`, nonce, PKCE verifier, destination and expiry (10 minutes) are sealed with AES-256-GCM, using a key made at startup, into a `__Host-byname_signin` cookie. The server keeps nothing per sign-in. The callback's `state` must match the browser's own cookie (constant time). A mismatched callback is refused and leaves that cookie alone, so it can't cancel a real sign-in. The cookie is cleared once used, and the provider refuses a replayed code. |
+| Sessions | A 256-bit random token in a `__Host-byname_session` cookie: Secure, HttpOnly, SameSite=Lax, 30 days. The database stores only its SHA-256, so snapshots and backups can't be used to sign in. Sign-out deletes the row. A new sign-in replaces any old session. Each account keeps at most 10 sessions; older ones are dropped. `byname sessions revoke` ends sessions from the host. |
+| Open redirects | After sign-in byname returns only to a local path. `//host`, `/\host`, control characters and the sign-in pages are refused. |
 | CSRF on writes | Unchanged `CrossOriginProtection`. Over HTTPS browsers send `Sec-Fetch-Site`. `Host` is reset to the public name before the check. |
 | Abuse | Requests from the internet without a session are limited per address, or per /64 for IPv6 (60 a minute, bursts of 30). The limiter's memory is bounded: entries are kept in least-recently-used order, dropped after 31 idle seconds, and past 10,000 the least recently used one makes room, so every address still gets a bucket of its own. Sign-ins in progress cost the server nothing. Signed-in users get the per-account write limits. |
-| Mistaken Funnel | The plain-HTTP listener refuses requests carrying Tailscale's Funnel marker, so `tailscale funnel 80` can't publish ot without sign-in. `ot-verify` fails on any Serve/Funnel target other than ot's socket, and on any Funnel while the public address is off. |
-| Secrets | Client secrets come from systemd credentials (`/etc/credstore`, root 0600, `ImportCredential=ot.*`), never from flags or the environment. They are sent only to the provider's token endpoint, never put in a browser URL. |
+| Mistaken Funnel | The plain-HTTP listener refuses requests carrying Tailscale's Funnel marker, so `tailscale funnel 80` can't publish byname without sign-in. `byname-verify` fails on any Serve/Funnel target other than byname's socket, and on any Funnel while the public address is off. |
+| Secrets | Client secrets come from systemd credentials (`/etc/credstore`, root 0600, `ImportCredential=byname.*`), never from flags or the environment. They are sent only to the provider's token endpoint, never put in a browser URL. |
 | Logging | Every sign-in, refusal, failure and sign-out is logged with provider, account and address. Tokens and codes are never logged. |
 | Transport | HSTS on the public name. TLS is Tailscale's, with a Let's Encrypt certificate. |
 
 | New risk | Handling |
 |---|---|
-| ot needs outbound internet for the token exchange, so the drop-in sets `IPAddressAllow=any`, which also lifts systemd's inbound filter on port 80 | Two of the three layers remain: nftables and ot's own peer check. The drop-in makes ot require `ot-firewall.service`, so it doesn't run without the firewall. Funnel traffic arrives on the socket, outside IP filtering. Possible later: an nftables output rule that limits ot's own outbound connections to tcp/443. |
-| Suspending someone at Google or Slack doesn't end their ot session (up to 30 days) | Documented. Remove them from the allow list or run `ot sessions revoke`. |
+| byname needs outbound internet for the token exchange, so the drop-in sets `IPAddressAllow=any`, which also lifts systemd's inbound filter on port 80 | Two of the three layers remain: nftables and byname's own peer check. The drop-in makes byname require `byname-firewall.service`, so it doesn't run without the firewall. Funnel traffic arrives on the socket, outside IP filtering. Possible later: an nftables output rule that limits byname's own outbound connections to tcp/443. |
+| Suspending someone at Google or Slack doesn't end their byname session (up to 30 days) | Documented. Remove them from the allow list or run `byname sessions revoke`. |
 | Allowing a Slack workspace admits its guests | Documented. |
 | A flood of made-up session cookies costs one SQLite primary-key lookup each before the rate limiter answers | Accepted: microseconds per request, and Funnel's own limits apply. |
-| A stolen session cookie or a taken-over Google/Slack account gives the same access as a household member | It's attributed in the history, and `ot sessions revoke` and the allow list cut it off. Use MFA on those accounts. |
+| A stolen session cookie or a taken-over Google/Slack account gives the same access as a household member | It's attributed in the history, and `byname sessions revoke` and the allow list cut it off. Use MFA on those accounts. |
 | The tailnet name appears in Certificate Transparency logs and public DNS | Accepted: Funnel needs a public name. |
-| Slack can't be used on IPv6-only servers (`slack.com` has no AAAA record) | Documented. `ot-verify` fails with the reason. |
+| Slack can't be used on IPv6-only servers (`slack.com` has no AAAA record) | Documented. `byname-verify` fails with the reason. |
 | Sessions live in the same SQLite file as the links | Only hashes are stored. They are restored along with the links. |
 
 **Independent review (same day).** A second reviewer, working only from the
@@ -168,8 +168,8 @@ these, all fixed before commit:
 | # | Severity | Finding | Fix |
 |---|---|---|---|
 | 1 | Medium | Two addresses could keep the in-memory list of pending sign-ins (1,000 max, 10 minutes each) full and block every internet sign-in. A hostile page could do the same through its visitors, because `/start` is a GET. | Pending state moved into the AES-GCM-sealed cookie; the server keeps none. |
-| 2 | Medium | The anonymous rate limiter kept an entry per address for 24 hours, with no cap and a full scan on every call. Rotating IPv6 addresses could run ot out of memory, for tailnet users too. | Idle entries dropped after 31 s, IPv6 keyed by /64, and a 10,000-entry cap that evicts the least recently used entry. A first version sent newcomers to a shared overflow bucket once full; an automated review after the commit pointed out that an attacker with a /48 could drain it, so eviction replaced it. The write limiter doesn't evict: with its table full it refuses new keys, so no one can reset a daily budget by pushing it out A third automated review then noted that LAN devices were keyed per address, so one LAN device taking many addresses could fill that table and lock out newcomers. Devices without Tailscale now share one change budget (30 a minute, 300 a day), as the first review had recommended. |
-| 3 | Low | A Funnel pointed at port 80 (`tailscale funnel 80`) arrives from localhost, which the private listener trusts, so it would have skipped sign-in. `ot-verify` didn't notice. | The private listener refuses Funnel-marked requests. `ot-verify` audits every Serve/Funnel target. |
+| 2 | Medium | The anonymous rate limiter kept an entry per address for 24 hours, with no cap and a full scan on every call. Rotating IPv6 addresses could run byname out of memory, for tailnet users too. | Idle entries dropped after 31 s, IPv6 keyed by /64, and a 10,000-entry cap that evicts the least recently used entry. A first version sent newcomers to a shared overflow bucket once full; an automated review after the commit pointed out that an attacker with a /48 could drain it, so eviction replaced it. The write limiter doesn't evict: with its table full it refuses new keys, so no one can reset a daily budget by pushing it out A third automated review then noted that LAN devices were keyed per address, so one LAN device taking many addresses could fill that table and lock out newcomers. Devices without Tailscale now share one change budget (30 a minute, 300 a day), as the first review had recommended. |
+| 3 | Low | A Funnel pointed at port 80 (`tailscale funnel 80`) arrives from localhost, which the private listener trusts, so it would have skipped sign-in. `byname-verify` didn't notice. | The private listener refuses Funnel-marked requests. `byname-verify` audits every Serve/Funnel target. |
 | 4 | Low | A listed non-Gmail address matched any Google account with that address. Google doesn't vouch for those. | Such entries match only accounts in that domain's Workspace (`hd`). |
 | 5 | Low | `IPAddressAllow=any` also lifts systemd's inbound filter, but the docs said the defences were unchanged. | The drop-in requires the firewall; docs corrected. |
 | 6 | Low | One allowed account could fill the 10,000-row session table. | At most 10 sessions per account. |
@@ -201,13 +201,13 @@ Also taken from its hardening notes:
 - `make gate` passes.
 
 **Not verified yet:** a real Funnel, real Google and Slack apps, and a phone
-on cellular. `ot-verify` and the phone check in public-access.md cover these
+on cellular. `byname-verify` and the phone check in public-access.md cover these
 on the host.
 
 ## Without Tailscale: your own domain (2026-11-25)
 
 Tailscale is now optional. A server can serve its own domain directly
-(`bootstrap.sh --no-tailscale --public-domain hg.example.com`): ot terminates
+(`bootstrap.sh --no-tailscale --public-domain hg.example.com`): byname terminates
 TLS with a Let's Encrypt certificate, and everyone signs in with Google or
 Slack. Sign-in, sessions, allow lists and the write limits are the ones
 reviewed above. What changes is the exposure.
@@ -216,21 +216,21 @@ reviewed above. What changes is the exposure.
 
 | Port | Who can reach it |
 |---|---|
-| TCP 443 | The internet. ot's TLS listener: every request counts as coming from the internet and needs a session, except the sign-in pages and static assets. |
-| TCP 80 | The internet. It answers Let's Encrypt's HTTP challenge and redirects everyone else to https. Only peers in `OT_ALLOW_CIDRS` (localhost, plus tailnet/LAN when those are on) reach the private, no-login handler. |
+| TCP 443 | The internet. byname's TLS listener: every request counts as coming from the internet and needs a session, except the sign-in pages and static assets. |
+| TCP 80 | The internet. It answers Let's Encrypt's HTTP challenge and redirects everyone else to https. Only peers in `BYNAME_ALLOW_CIDRS` (localhost, plus tailnet/LAN when those are on) reach the private, no-login handler. |
 | TCP 22 | The provider firewall limits it to `ssh_cidrs`. On the host, `--ssh-from any` leaves address filtering to the provider; a specific `--ssh-from` filters there too. sshd is key-only, with no root login and `AllowUsers admin`. |
 
 Nothing else is open: no Tailscale port without Tailscale.
 
 | Control | How |
 |---|---|
-| No trusted headers | On the direct TLS listener, ot reads nothing from the request to decide trust. The peer is the TCP peer, and `Host` must be the public name (421 otherwise). Forwarding and `Tailscale-*` headers are ignored. |
-| Certificates | `autocert` with `HostWhitelist(public name)`: a TLS handshake for any other name fails before Let's Encrypt is contacted, so scanners can't make ot request certificates or burn its rate limits. Keys and certificates are in `/var/lib/ot/acme` (0700, ot). TLS 1.2 minimum. HSTS is on. |
-| Port 80 redirect | ot builds the target from its own public URL plus the request's path and query only. An opaque request target (`GET http:evil.example`) can't become part of the host. |
+| No trusted headers | On the direct TLS listener, byname reads nothing from the request to decide trust. The peer is the TCP peer, and `Host` must be the public name (421 otherwise). Forwarding and `Tailscale-*` headers are ignored. |
+| Certificates | `autocert` with `HostWhitelist(public name)`: a TLS handshake for any other name fails before Let's Encrypt is contacted, so scanners can't make byname request certificates or burn its rate limits. Keys and certificates are in `/var/lib/byname/acme` (0700, byname). TLS 1.2 minimum. HSTS is on. |
+| Port 80 redirect | byname builds the target from its own public URL plus the request's path and query only. An opaque request target (`GET http:evil.example`) can't become part of the host. |
 | Connection floods | Each internet-facing listener holds at most 256 internet connections, and 32 per IPv4 address or IPv6 /64. Over the limit, a connection is closed at once instead of waiting, so nobody can hold the accept queue. Tailnet, LAN and localhost peers are never counted or refused. Port 80 redirects close their connection. Timeouts: 5 s for headers (TLS handshakes included), 10 s for the body, 60 s idle. |
 | Port 80 and localhost | Port 80 gives the private handler only to trusted peers using the short name. Localhost gets only `/_/healthz`, so a reverse proxy or tunnel that forwarded internet traffic to localhost:80 can't expose the no-login handler. |
-| Firewall | nftables opens 80 and 443 only with `--public-domain`, and the Tailscale rules only with Tailscale. With a public address, ot won't start without the firewall (`Requires=ot-firewall.service`). |
-| Fail-closed setup | OpenTofu refuses a server without Tailscale that has no `ssh_cidrs` or no `public_domain`, and a public domain without IPv4. It parses `ssh_cidrs` (canonical, no wider than /16 or /48, an IPv4 block when the server has IPv4). After every apply, it fails if AWS's stored firewall lets SSH in from the whole internet. `bootstrap.sh` won't open the public address until a sign-in provider is configured, won't run `--no-tailscale` while tailscaled is up (Tailscale SSH bypasses the firewall), and refuses `--ssh-from any` on a Pi. `ot-verify` reads the effective `OT_ALLOW_CIDRS`, fails if tailscaled runs without Tailscale configured, makes a real HTTPS request (DNS, certificate, sign-in redirect), and checks that port 80 only redirects an untrusted peer. |
+| Firewall | nftables opens 80 and 443 only with `--public-domain`, and the Tailscale rules only with Tailscale. With a public address, byname won't start without the firewall (`Requires=byname-firewall.service`). |
+| Fail-closed setup | OpenTofu refuses a server without Tailscale that has no `ssh_cidrs` or no `public_domain`, and a public domain without IPv4. It parses `ssh_cidrs` (canonical, no wider than /16 or /48, an IPv4 block when the server has IPv4). After every apply, it fails if AWS's stored firewall lets SSH in from the whole internet. `bootstrap.sh` won't open the public address until a sign-in provider is configured, won't run `--no-tailscale` while tailscaled is up (Tailscale SSH bypasses the firewall), and refuses `--ssh-from any` on a Pi. `byname-verify` reads the effective `BYNAME_ALLOW_CIDRS`, fails if tailscaled runs without Tailscale configured, makes a real HTTPS request (DNS, certificate, sign-in redirect), and checks that port 80 only redirects an untrusted peer. |
 
 | New risk | Handling |
 |---|---|
@@ -238,9 +238,9 @@ Nothing else is open: no Tailscale port without Tailscale.
 | SSH reachable from the internet when the provider firewall is the only address filter (`--ssh-from any`) | Chosen so a changed home address doesn't lock you out: `tofu apply` with new `ssh_cidrs` fixes it. sshd is key-only. Use a specific `--ssh-from` if your address is static. |
 | A new Lightsail instance has AWS's default firewall (22 and 80 open) for about a minute | Unchanged from before; nothing listens on 80 yet, and sshd accepts only your key. |
 | No WhoIs and no tailnet: every user is identified by their Google or Slack account | That's the point of this mode. |
-| Certificates depend on DNS pointing at the server | If DNS is wrong, HTTPS fails closed (no certificate); nothing falls back to plain HTTP. While DNS is wrong, anyone probing the name can make ot retry and use up Let's Encrypt's 5 failed validations an hour, which only delays your own certificate. Set DNS first. |
+| Certificates depend on DNS pointing at the server | If DNS is wrong, HTTPS fails closed (no certificate); nothing falls back to plain HTTP. While DNS is wrong, anyone probing the name can make byname retry and use up Let's Encrypt's 5 failed validations an hour, which only delays your own certificate. Set DNS first. |
 | On a Pi, a router that rewrites the source address of forwarded connections would make internet clients look like LAN peers on port 80 | Documented: don't combine `--lan-access` with `--public-domain` behind such a router. |
-| ot behind someone else's proxy | Not supported: in direct mode ot must be the one terminating TLS, and it trusts no forwarding headers. |
+| byname behind someone else's proxy | Not supported: in direct mode byname must be the one terminating TLS, and it trusts no forwarding headers. |
 
 **Independent review (same day).** A reviewer working from the code found no
 path from the internet to the no-login handler and no open redirect. It
@@ -250,9 +250,9 @@ found:
 |---|---|---|---|
 | 1 | Medium | One host could hold all 512 connection slots on port 80 or 443. Accept then waited, and the household's tailnet/LAN users queued behind it. File descriptors could also run out before the cap, and accept errors were logged only at debug. | The non-blocking guard above, with per-address limits; trusted peers exempt; caps lowered to 256; port 80 redirects close; accept errors at warn. |
 | 2 | Low–medium | `--ssh-from any` was accepted on a Pi, which has no provider firewall. | Refused on a Pi. |
-| 3 | Low–medium | `ot-verify` read `OT_ALLOW_CIDRS` only from `ot.env`, but `ot.local.env` overrides it. A broad value there would have opened the no-login handler on port 80 to the internet, unnoticed. | Effective value read, plus a live check that port 80 only redirects an untrusted peer. |
+| 3 | Low–medium | `byname-verify` read `BYNAME_ALLOW_CIDRS` only from `byname.env`, but `byname.local.env` overrides it. A broad value there would have opened the no-login handler on port 80 to the internet, unnoticed. | Effective value read, plus a live check that port 80 only redirects an untrusted peer. |
 | 4 | Low | `ssh_cidrs` was checked as a string: `1.2.3.4/0`, `0::/0` and host bits got through. | Parsed: canonical form, size limits, and an IPv4 block required with IPv4. A post-apply check covers AWS's undocumented handling of an address family left out. |
-| 5 | Low | `--no-tailscale` on a host that had Tailscale left tailscaled, and so Tailscale SSH, running. | The bootstrap refuses until it's stopped, and `ot-verify` fails while it runs. |
+| 5 | Low | `--no-tailscale` on a host that had Tailscale left tailscaled, and so Tailscale SSH, running. | The bootstrap refuses until it's stopped, and `byname-verify` fails while it runs. |
 
 It also found three functional bugs, all fixed:
 

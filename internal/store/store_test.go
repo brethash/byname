@@ -17,7 +17,7 @@ var (
 
 func openTest(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "ot.db"))
+	s, err := Open(filepath.Join(t.TempDir(), "byname.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func TestImport(t *testing.T) {
 }
 
 func TestRefusesNewerSchema(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ot.db")
+	path := filepath.Join(t.TempDir(), "byname.db")
 	s, err := Open(path)
 	if err != nil {
 		t.Fatal(err)

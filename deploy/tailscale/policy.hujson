@@ -1,6 +1,6 @@
-// Tailscale policy additions for ot. Merge these into your tailnet policy
+// Tailscale policy additions for byname. Merge these into your tailnet policy
 // file (admin console → Access controls). Replace:
-//   tag:ot             tag:<name> if you chose another service name
+//   tag:nym             tag:<name> if you chose another service name
 //                      (bootstrap.sh --name, or `name` in deploy/cloud)
 //   <you@example.com>  your Tailscale login
 //   <admin>            the host's admin user: your own user on a Pi,
@@ -8,25 +8,25 @@
 //
 // NOTE: these grants only restrict anything once the default allow-all rule
 // is removed from your policy, which affects your whole tailnet. Keeping
-// allow-all is acceptable: ot enforces its own tailnet-only checks.
+// allow-all is acceptable: byname enforces its own tailnet-only checks.
 {
   "tagOwners": {
-    "tag:ot": ["<you@example.com>"],
+    "tag:nym": ["<you@example.com>"],
   },
 
   "grants": [
-    // Household members (not tagged servers, not shared-in users) may use ot:
-    // http://ot/ on port 80, and https://ot.<tailnet>.ts.net on 443 when
+    // Household members (not tagged servers, not shared-in users) may use byname:
+    // http://nym/ on port 80, and https://nym.<tailnet>.ts.net on 443 when
     // the public address is on.
-    {"src": ["autogroup:member"], "dst": ["tag:ot"], "ip": ["tcp:80", "tcp:443"]},
+    {"src": ["autogroup:member"], "dst": ["tag:nym"], "ip": ["tcp:80", "tcp:443"]},
   ],
 
   // Only for bootstrap.sh --public: uncomment to let the host publish its
   // https:// name on the internet with Tailscale Funnel, and turn on HTTPS
   // certificates (admin console → DNS). Leave it commented out for a
-  // tailnet-only ot.
+  // tailnet-only byname.
   // "nodeAttrs": [
-  //   {"target": ["tag:ot"], "attr": ["funnel"]},
+  //   {"target": ["tag:nym"], "attr": ["funnel"]},
   // ],
 
   "ssh": [
@@ -34,7 +34,7 @@
     {
       "action": "check",
       "src":    ["<you@example.com>"],
-      "dst":    ["tag:ot"],
+      "dst":    ["tag:nym"],
       "users":  ["<admin>"],
     },
   ],

@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"otterly-go/internal/app"
-	"otterly-go/internal/link"
-	"otterly-go/internal/store"
+	"byname/internal/app"
+	"byname/internal/link"
+	"byname/internal/store"
 )
 
 // apiLink is the JSON form of a link.
@@ -209,7 +209,7 @@ func (s *Server) apiDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Export is the file format of /_/export and `ot export` / `ot import`.
+// Export is the file format of /_/export and `byname export` / `byname import`.
 type Export struct {
 	Format     string       `json:"format"`
 	Version    int          `json:"version"`
@@ -230,7 +230,7 @@ type ExportLink struct {
 }
 
 // ExportFormat identifies export files.
-const ExportFormat = "ot-links"
+const ExportFormat = "byname-links"
 
 // BuildExport converts links to the export format.
 func BuildExport(links []store.Link, now time.Time) Export {
@@ -253,7 +253,7 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	w.Header().Set("Content-Disposition", `attachment; filename="ot-links-`+now.Format("20060102")+`.json"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="byname-links-`+now.Format("20060102")+`.json"`)
 	writeJSON(w, http.StatusOK, BuildExport(links, now))
 }
 

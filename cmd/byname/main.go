@@ -1,16 +1,16 @@
-// Command ot is a household short-link service ("ot/wiki") for a Raspberry Pi
+// Command byname is a household short-link service ("nym/wiki") for a Raspberry Pi
 // on a tailnet.
 //
-//	ot serve     run the web service
-//	ot snapshot  write a consistent database snapshot
-//	ot backup    upload the newest snapshot to S3
-//	ot export    print all links as JSON
-//	ot import    load links from an export file
-//	ot sessions  list or revoke sign-ins on the public address
-//	ot version   print the version
+//	byname serve     run the web service
+//	byname snapshot  write a consistent database snapshot
+//	byname backup    upload the newest snapshot to S3
+//	byname export    print all links as JSON
+//	byname import    load links from an export file
+//	byname sessions  list or revoke sign-ins on the public address
+//	byname version   print the version
 //
-// Every flag can also be set with an OT_* environment variable (for example
-// --hosts ⇔ OT_HOSTS), which is how the systemd units configure it.
+// Every flag can also be set with an BYNAME_* environment variable (for example
+// --hosts ⇔ BYNAME_HOSTS), which is how the systemd units configure it.
 package main
 
 import (
@@ -37,20 +37,20 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/time/rate"
 
-	"otterly-go/internal/app"
-	"otterly-go/internal/auth"
-	"otterly-go/internal/backup"
-	"otterly-go/internal/store"
-	"otterly-go/internal/web"
-	"otterly-go/internal/whois"
+	"byname/internal/app"
+	"byname/internal/auth"
+	"byname/internal/backup"
+	"byname/internal/store"
+	"byname/internal/web"
+	"byname/internal/whois"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
 const (
-	defaultDB          = "/var/lib/ot/ot.db"
-	defaultSnapshotDir = "/var/lib/ot/snapshots"
+	defaultDB          = "/var/lib/byname/byname.db"
+	defaultSnapshotDir = "/var/lib/byname/snapshots"
 	defaultThrottled   = "/sys/devices/platform/soc/soc:firmware/get_throttled"
 	tailnetNets        = "100.64.0.0/10,fd7a:115c:a1e0::/48"
 )
@@ -75,13 +75,13 @@ func main() {
 		os.Exit(2)
 	}
 	if err := cmd(os.Args[2:]); err != nil {
-		fmt.Fprintf(os.Stderr, "ot %s: %v\n", os.Args[1], err)
+		fmt.Fprintf(os.Stderr, "byname %s: %v\n", os.Args[1], err)
 		os.Exit(1)
 	}
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: ot <command> [flags]
+	fmt.Fprint(os.Stderr, `usage: byname <command> [flags]
 
 commands:
   serve     run the web service
@@ -92,17 +92,17 @@ commands:
   sessions  list or revoke sign-ins on the public address
   version   print the version
 
-Run "ot <command> -h" for flags. Every flag may also be set as OT_<NAME>
-(upper case, dashes as underscores), e.g. OT_HOSTS=ot,ot.example.ts.net.
+Run "byname <command> -h" for flags. Every flag may also be set as BYNAME_<NAME>
+(upper case, dashes as underscores), e.g. BYNAME_HOSTS=nym,nym.example.ts.net.
 `)
 }
 
-// newFlags returns a FlagSet whose defaults come from OT_* env vars.
+// newFlags returns a FlagSet whose defaults come from BYNAME_* env vars.
 func newFlags(name string) *flag.FlagSet {
-	return flag.NewFlagSet("ot "+name, flag.ExitOnError)
+	return flag.NewFlagSet("byname "+name, flag.ExitOnError)
 }
 
-// parse applies OT_* environment variables for flags not given explicitly.
+// parse applies BYNAME_* environment variables for flags not given explicitly.
 func parse(fs *flag.FlagSet, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -114,7 +114,7 @@ func parse(fs *flag.FlagSet, args []string) error {
 		if set[f.Name] || err != nil {
 			return
 		}
-		env := "OT_" + strings.ToUpper(strings.ReplaceAll(f.Name, "-", "_"))
+		env := "BYNAME_" + strings.ToUpper(strings.ReplaceAll(f.Name, "-", "_"))
 		if v, ok := os.LookupEnv(env); ok {
 			if e := fs.Set(f.Name, v); e != nil {
 				err = fmt.Errorf("%s: %w", env, e)
@@ -150,7 +150,7 @@ func serve(args []string) error {
 	fs := newFlags("serve")
 	listen := fs.String("listen", ":80", "listen address")
 	dbPath := fs.String("db", defaultDB, "SQLite database path")
-	hosts := fs.String("hosts", "", "comma-separated Host names to answer to; the first is shown in the UI (required, e.g. ot,ot.example.ts.net)")
+	hosts := fs.String("hosts", "", "comma-separated Host names to answer to; the first is shown in the UI (required, e.g. nym,nym.example.ts.net)")
 	allow := fs.String("allow-cidrs", tailnetNets, "comma-separated peer networks allowed to connect")
 	socket := fs.String("tailscale-socket", whois.DefaultSocket, "tailscaled LocalAPI socket for WhoIs")
 	noWhois := fs.Bool("no-whois", false, "disable Tailscale WhoIs (changes are attributed by IP only)")
@@ -166,17 +166,17 @@ func serve(args []string) error {
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
 	logFormat := fs.String("log-format", "text", "text or json")
 	publicURL := fs.String("public-url", "", "public https:// address, e.g. https://hg.example.com (served directly) or https://NAME.TAILNET.ts.net (through Tailscale Funnel); empty = no public address")
-	publicListen := fs.String("public-listen", "", `where the public address is served: ":443" to terminate TLS here with a Let's Encrypt certificate, or "unix:/path" for Tailscale Serve/Funnel to proxy to (default: unix:/run/ot/public.sock for a .ts.net address, :443 otherwise)`)
-	acmeDir := fs.String("acme-dir", "/var/lib/ot/acme", "where Let's Encrypt account keys and certificates are kept (direct public address only)")
+	publicListen := fs.String("public-listen", "", `where the public address is served: ":443" to terminate TLS here with a Let's Encrypt certificate, or "unix:/path" for Tailscale Serve/Funnel to proxy to (default: unix:/run/byname/public.sock for a .ts.net address, :443 otherwise)`)
+	acmeDir := fs.String("acme-dir", "/var/lib/byname/acme", "where Let's Encrypt account keys and certificates are kept (direct public address only)")
 	acmeEmail := fs.String("acme-email", "", "optional contact address for Let's Encrypt expiry notices (direct public address only)")
 	maxConns := fs.Int("max-public-conns", 256, "concurrent internet connections per internet-facing listener (tailnet, LAN and localhost peers don't count)")
 	maxPerPeer := fs.Int("max-conns-per-ip", 32, "concurrent internet connections per IPv4 address or IPv6 /64")
 	sessionTTL := fs.Duration("session-ttl", 30*24*time.Hour, "how long a Google or Slack sign-in lasts")
 	googleID := fs.String("google-client-id", "", "Google OAuth client ID (enables Sign in with Google)")
-	googleSecret := fs.String("google-client-secret-file", "", "file holding the Google client secret (default: systemd credential ot.google-client-secret)")
+	googleSecret := fs.String("google-client-secret-file", "", "file holding the Google client secret (default: systemd credential byname.google-client-secret)")
 	googleAllow := fs.String("google-allow", "", "comma-separated Google accounts (alice@gmail.com) and Workspace domains (example.com) that may sign in")
 	slackID := fs.String("slack-client-id", "", "Slack app client ID (enables Sign in with Slack)")
-	slackSecret := fs.String("slack-client-secret-file", "", "file holding the Slack client secret (default: systemd credential ot.slack-client-secret)")
+	slackSecret := fs.String("slack-client-secret-file", "", "file holding the Slack client secret (default: systemd credential byname.slack-client-secret)")
 	slackTeams := fs.String("slack-teams", "", "comma-separated Slack workspace IDs (T0123ABCD) whose members may sign in")
 	if err := parse(fs, args); err != nil {
 		return err
@@ -188,7 +188,7 @@ func serve(args []string) error {
 	}
 	hostList := splitList(*hosts)
 	if len(hostList) == 0 {
-		return errors.New("--hosts is required (e.g. --hosts ot,ot.example.ts.net)")
+		return errors.New("--hosts is required (e.g. --hosts nym,nym.example.ts.net)")
 	}
 	var nets []netip.Prefix
 	for _, c := range splitList(*allow) {
@@ -225,7 +225,7 @@ func serve(args []string) error {
 
 	var providers []*auth.Provider
 	if *googleID != "" {
-		secret, err := readSecret(*googleSecret, "ot.google-client-secret")
+		secret, err := readSecret(*googleSecret, "byname.google-client-secret")
 		if err != nil {
 			return fmt.Errorf("google: %w", err)
 		}
@@ -238,7 +238,7 @@ func serve(args []string) error {
 		return errors.New("--google-allow is set but --google-client-id is not")
 	}
 	if *slackID != "" {
-		secret, err := readSecret(*slackSecret, "ot.slack-client-secret")
+		secret, err := readSecret(*slackSecret, "byname.slack-client-secret")
 		if err != nil {
 			return fmt.Errorf("slack: %w", err)
 		}
@@ -279,7 +279,7 @@ func serve(args []string) error {
 		if *publicListen == "" {
 			*publicListen = ":443"
 			if strings.HasSuffix(publicHost, ".ts.net") {
-				*publicListen = "unix:/run/ot/public.sock"
+				*publicListen = "unix:/run/byname/public.sock"
 			}
 		}
 		webCfg.PublicBehindTailscale = strings.HasPrefix(*publicListen, "unix:")
@@ -368,7 +368,7 @@ func serve(args []string) error {
 	for _, p := range providers {
 		names = append(names, p.ID())
 	}
-	log.Info("ot serving", "version", version, "listen", *listen, "hosts", hostList,
+	log.Info("byname serving", "version", version, "listen", *listen, "hosts", hostList,
 		"allow", *allow, "whois", !*noWhois, "db", *dbPath, "snapshots", *snapDir,
 		"public", *publicURL, "public_listen", *publicListen, "sign_in", names)
 
@@ -395,7 +395,7 @@ func serve(args []string) error {
 }
 
 // listenUnix listens on "unix:/path", owner-only. Only tailscaled (root) and
-// ot itself may connect: the public handler trusts the forwarding headers it
+// byname itself may connect: the public handler trusts the forwarding headers it
 // receives there. systemd's RuntimeDirectory (mode 0700) guards the directory
 // too.
 func listenUnix(addr string) (net.Listener, error) {
@@ -448,9 +448,9 @@ func sessions(args []string) error {
 	fs := newFlags("sessions")
 	dbPath := fs.String("db", defaultDB, "SQLite database path")
 	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, `usage: ot sessions [--db PATH]                     list live sign-ins
-       ot sessions [--db PATH] revoke EMAIL         sign EMAIL out everywhere
-       ot sessions [--db PATH] revoke --all         sign everyone out
+		fmt.Fprint(os.Stderr, `usage: byname sessions [--db PATH]                     list live sign-ins
+       byname sessions [--db PATH] revoke EMAIL         sign EMAIL out everywhere
+       byname sessions [--db PATH] revoke --all         sign everyone out
 `)
 	}
 	if err := parse(fs, args); err != nil {
@@ -519,9 +519,9 @@ func runBackup(args []string) error {
 	fs := newFlags("backup")
 	dir := fs.String("snapshot-dir", defaultSnapshotDir, "snapshot directory to upload from")
 	bucket := fs.String("bucket", "", "S3 bucket (required)")
-	prefix := fs.String("prefix", "ot/", "key prefix in the bucket")
+	prefix := fs.String("prefix", "byname/", "key prefix in the bucket")
 	region := fs.String("region", "", "AWS region (default from the AWS config chain)")
-	state := fs.String("state-file", "/var/lib/ot-backup/last-upload", "file recording the last uploaded snapshot")
+	state := fs.String("state-file", "/var/lib/byname-backup/last-upload", "file recording the last uploaded snapshot")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -586,7 +586,7 @@ func importLinks(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New(`usage: ot import [flags] <file.json | ->`)
+		return errors.New(`usage: byname import [flags] <file.json | ->`)
 	}
 	var r io.Reader = os.Stdin
 	if p := fs.Arg(0); p != "-" {
@@ -602,7 +602,7 @@ func importLinks(args []string) error {
 		return fmt.Errorf("read export: %w", err)
 	}
 	if ex.Format != web.ExportFormat {
-		return fmt.Errorf("not an ot export (format %q)", ex.Format)
+		return fmt.Errorf("not an byname export (format %q)", ex.Format)
 	}
 
 	st, err := store.Open(*dbPath)

@@ -34,7 +34,7 @@ type Attempts struct {
 // maxCookie bounds the sealed cookie, keeping it under browsers' 4 KB limit.
 const maxCookie = 3800
 
-var attemptAAD = []byte("ot sign-in v1")
+var attemptAAD = []byte("byname sign-in v1")
 
 // NewAttempts returns sign-in state that lasts ttl.
 func NewAttempts(ttl time.Duration) *Attempts {

@@ -1,11 +1,11 @@
 variable "name" {
   description = <<-EOT
-    The service name, e.g. "ot" for ot/wiki. It becomes the server's hostname and the Lightsail
+    The service name, e.g. "nym" for nym/wiki. It becomes the server's hostname and the Lightsail
     instance name, and with Tailscale its tailnet (MagicDNS) name: nothing else on the tailnet may
     already use it, or Tailscale renames this server to NAME-1.
   EOT
   type        = string
-  default     = "ot"
+  default     = "nym"
 
   validation {
     condition     = can(regex("^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$", var.name)) && var.name != "localhost"
@@ -25,7 +25,7 @@ variable "tailscale" {
 
 variable "public_domain" {
   description = <<-EOT
-    Your own domain for the service, e.g. "hg.example.com". ot serves it directly over HTTPS with
+    Your own domain for the service, e.g. "hg.example.com". byname serves it directly over HTTPS with
     a Let's Encrypt certificate, and everyone outside the tailnet signs in with Google or Slack
     (docs/public-access.md). Opens TCP 80 and 443 to the internet and needs ipv4 = true. Point
     the domain's A and AAAA records at the addresses in the outputs.
@@ -66,7 +66,7 @@ variable "tag" {
 
   validation {
     condition     = var.tag == null || can(regex("^tag:[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.tag))
-    error_message = "tag must look like tag:ot."
+    error_message = "tag must look like tag:nym."
   }
 }
 

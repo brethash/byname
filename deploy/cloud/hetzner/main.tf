@@ -27,7 +27,7 @@ locals {
 
   public = var.public_domain != ""
 
-  labels = { app = "ot", service = var.name }
+  labels = { app = "nym", service = var.name }
 }
 
 resource "hcloud_ssh_key" "admin" {
@@ -73,7 +73,7 @@ resource "hcloud_firewall" "server" {
       protocol    = "tcp"
       port        = rule.value
       source_ips  = ["0.0.0.0/0", "::/0"]
-      description = "ot public domain"
+      description = "byname public domain"
     }
   }
 }

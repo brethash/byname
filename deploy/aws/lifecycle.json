@@ -1,9 +1,9 @@
 {
   "Rules": [
     {
-      "ID": "ot-backup-retention",
+      "ID": "byname-backup-retention",
       "Status": "Enabled",
-      "Filter": { "Prefix": "ot/" },
+      "Filter": { "Prefix": "byname/" },
       "Expiration": { "Days": 365 },
       "NoncurrentVersionExpiration": { "NoncurrentDays": 90 },
       "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 }

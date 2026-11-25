@@ -1,6 +1,6 @@
 // Package backup uploads the newest local snapshot to S3.
 //
-// It runs as its own systemd unit and user (ot-backup), separate from the web
+// It runs as its own systemd unit and user (byname-backup), separate from the web
 // service: only this process ever holds AWS credentials, and it can read the
 // snapshot directory but not write the live database.
 package backup
@@ -17,7 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"otterly-go/internal/app"
+	"byname/internal/app"
 )
 
 // Uploader puts an object. *S3Uploader implements it; tests use a fake.
@@ -27,8 +27,8 @@ type Uploader interface {
 
 // Options configures a run.
 type Options struct {
-	SnapshotDir string // where `ot serve` writes ot-*.db snapshots
-	Prefix      string // key prefix in the bucket, e.g. "ot/"
+	SnapshotDir string // where `byname serve` writes byname-*.db snapshots
+	Prefix      string // key prefix in the bucket, e.g. "byname/"
 	StateFile   string // remembers the last uploaded snapshot name
 }
 

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-var self = []string{"ot", "ot.example.ts.net", "localhost:8080"}
+var self = []string{"nym", "nym.example.ts.net", "localhost:8080"}
 
 func TestParseName(t *testing.T) {
 	ok := map[string]string{
@@ -94,9 +94,9 @@ func TestValidateTarget(t *testing.T) {
 		"https://-bad-.com/":                           ErrTargetHost,
 		"https://exa_mple.com/":                        ErrTargetHost,
 		"https://example.com:99999/":                   ErrTargetHost,
-		"http://ot/loop":                               ErrTargetSelf,
-		"http://OT./loop":                              ErrTargetSelf,
-		"https://ot.example.ts.net/x":                  ErrTargetSelf,
+		"http://nym/loop":                              ErrTargetSelf,
+		"http://NYM./loop":                             ErrTargetSelf,
+		"https://nym.example.ts.net/x":                 ErrTargetSelf,
 		"http://localhost:9999/x":                      ErrTargetSelf,
 		"https://{1}/x":                                ErrTargetTemplate,
 		"https://{1}.example.com/x":                    ErrTargetTemplate,
@@ -126,7 +126,7 @@ func TestExpand(t *testing.T) {
 		{"https://example.com/docs", "a%20b", "", "https://example.com/docs/a%20b"},
 		{"https://example.com/docs", "a//b/", "", "https://example.com/docs/a/b"},
 		{"https://example.com/docs", "../../x", "", "https://example.com/x"},
-		{"https://github.com/{1}", "otterly", "", "https://github.com/otterly"},
+		{"https://github.com/{1}", "octocat", "", "https://github.com/octocat"},
 		{"https://github.com/{1}/{2}", "a/b/c", "", "https://github.com/a/b"},
 		{"https://github.com/{1}/{2}", "a", "", "https://github.com/a/"},
 		{"https://x.com/{*}", "a/b c/d", "", "https://x.com/a/b%20c/d"},
@@ -164,7 +164,7 @@ func TestExpandRejectsBadInput(t *testing.T) {
 func FuzzValidateTarget(f *testing.F) {
 	for _, s := range []string{
 		"https://example.com/a?b#c", "javascript:alert(1)", `https://a\@b`, "https://{1}/",
-		"https://bank.com@evil", "http://ot/x", "https://[::1]:80/", "https://x.com/{*}?q={1}",
+		"https://bank.com@evil", "http://nym/x", "https://[::1]:80/", "https://x.com/{*}?q={1}",
 	} {
 		f.Add(s)
 	}

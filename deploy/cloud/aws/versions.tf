@@ -1,5 +1,5 @@
 /**
- * ot on AWS: one Lightsail nano instance, IPv6-only, reachable only over Tailscale.
+ * byname on AWS: one Lightsail nano instance, IPv6-only, reachable only over Tailscale.
  *
  * Why Lightsail and not EC2: the IPv6-only nano bundle is $3.50/month flat (512 MB, 2 vCPU burst,
  * 20 GB SSD, 1 TB transfer). The closest EC2 setup, a t4g.nano with an 8 GB gp3 disk, is $3.71
@@ -30,7 +30,7 @@ provider "aws" {
 
   default_tags {
     tags = {
-      app     = "ot"
+      app     = "nym"
       service = var.name
     }
   }

@@ -4,33 +4,33 @@
 #
 # 1. verify the binary's checksum
 # 2. snapshot the database with the CURRENT binary (before any migration)
-# 3. atomically point /usr/local/lib/ot/current at the new version
+# 3. atomically point /usr/local/lib/byname/current at the new version
 # 4. restart and health-check; on failure point back and restart
 set -euo pipefail
 
 STAGE="$1" VERSION="$2" SHA="$3"
-LIB=/usr/local/lib/ot
-DB=/var/lib/ot/ot.db
-SNAPS=/var/lib/ot/snapshots
+LIB=/usr/local/lib/byname
+DB=/var/lib/byname/byname.db
+SNAPS=/var/lib/byname/snapshots
 
 [[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 1; }
 [[ "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad version" >&2; exit 1; }
-id ot >/dev/null 2>&1 || { echo "user ot missing; run deploy/host/bootstrap.sh first" >&2; exit 1; }
-[[ -f /etc/ot/ot.env ]] || { echo "/etc/ot/ot.env missing; run deploy/host/bootstrap.sh first" >&2; exit 1; }
+id byname >/dev/null 2>&1 || { echo "user byname missing; run deploy/host/bootstrap.sh first" >&2; exit 1; }
+[[ -f /etc/byname/byname.env ]] || { echo "/etc/byname/byname.env missing; run deploy/host/bootstrap.sh first" >&2; exit 1; }
 
 echo "==> verifying checksum"
-echo "$SHA  $STAGE/ot" | sha256sum -c --quiet - || { echo "checksum mismatch; aborting" >&2; exit 1; }
+echo "$SHA  $STAGE/byname" | sha256sum -c --quiet - || { echo "checksum mismatch; aborting" >&2; exit 1; }
 
 echo "==> installing $LIB/$VERSION"
 install -d -m 0755 "$LIB/$VERSION"
-install -m 0755 "$STAGE/ot" "$LIB/$VERSION/ot"
-"$LIB/$VERSION/ot" version >/dev/null
+install -m 0755 "$STAGE/byname" "$LIB/$VERSION/byname"
+"$LIB/$VERSION/byname" version >/dev/null
 
 # Keep helper scripts and units in step with the binary.
-install -m 0755 "$STAGE/verify.sh" /usr/local/sbin/ot-verify
-install -m 0755 "$STAGE/restore.sh" /usr/local/sbin/ot-restore
+install -m 0755 "$STAGE/verify.sh" /usr/local/sbin/byname-verify
+install -m 0755 "$STAGE/restore.sh" /usr/local/sbin/byname-restore
 units_changed=0
-for u in ot.service ot-backup.service ot-backup.timer ot-firewall.service; do
+for u in byname.service byname-backup.service byname-backup.timer byname-firewall.service; do
   if ! cmp -s "$STAGE/$u" "/etc/systemd/system/$u"; then
     install -m 0644 "$STAGE/$u" "/etc/systemd/system/$u"
     units_changed=1
@@ -41,23 +41,23 @@ done
 PREV="$(readlink "$LIB/current" 2>/dev/null || true)"
 if [[ -n "$PREV" && -f "$DB" ]]; then
   echo "==> pre-deploy snapshot (with $PREV)"
-  sudo -u ot "$LIB/$PREV/ot" snapshot --db "$DB" --snapshot-dir "$SNAPS"
+  sudo -u byname "$LIB/$PREV/byname" snapshot --db "$DB" --snapshot-dir "$SNAPS"
 fi
 
-HOST="$(sed -n 's/^OT_HOSTS=\([^,]*\).*/\1/p' /etc/ot/ot.env)"
+HOST="$(sed -n 's/^BYNAME_HOSTS=\([^,]*\).*/\1/p' /etc/byname/byname.env)"
 
 switch_to() {
   ln -sfn "$1" "$LIB/current.new"
   mv -T "$LIB/current.new" "$LIB/current"
-  systemctl restart ot.service
+  systemctl restart byname.service
 }
 
 healthy() {
   local body
   for _ in $(seq 1 20); do
-    # Via localhost (allowed in ot.env), so a deploy doesn't depend on
-    # tailscaled being up at that moment. ot-verify tests the tailnet path.
-    body="$(curl -fsS -m 3 -H "Host: ${HOST:-ot}" "http://127.0.0.1/_/healthz" 2>/dev/null || true)"
+    # Via localhost (allowed in byname.env), so a deploy doesn't depend on
+    # tailscaled being up at that moment. byname-verify tests the tailnet path.
+    body="$(curl -fsS -m 3 -H "Host: ${HOST:-nym}" "http://127.0.0.1/_/healthz" 2>/dev/null || true)"
     if grep -q '"status": "ok"' <<<"$body" && grep -q "\"version\": \"$1\"" <<<"$body"; then
       return 0
     fi
@@ -69,10 +69,10 @@ healthy() {
 echo "==> switching to $VERSION"
 switch_to "$VERSION"
 if healthy "$VERSION"; then
-  echo "==> healthy: ot $VERSION is live"
+  echo "==> healthy: byname $VERSION is live"
 else
   echo "!! $VERSION failed its health check" >&2
-  journalctl -u ot.service -n 20 --no-pager >&2 || true
+  journalctl -u byname.service -n 20 --no-pager >&2 || true
   if [[ -n "$PREV" && "$PREV" != "$VERSION" ]]; then
     echo "==> rolling back to $PREV" >&2
     switch_to "$PREV"
@@ -80,7 +80,7 @@ else
       echo "==> rolled back; $PREV is live" >&2
     else
       echo "!! rollback also unhealthy. If $VERSION migrated the schema, restore the" >&2
-      echo "   pre-deploy snapshot: sudo ot-restore \$(ls -1 $SNAPS/ot-*.db | tail -1)" >&2
+      echo "   pre-deploy snapshot: sudo byname-restore \$(ls -1 $SNAPS/byname-*.db | tail -1)" >&2
     fi
   fi
   exit 1

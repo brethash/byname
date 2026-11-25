@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"otterly-go/internal/link"
+	"byname/internal/link"
 
 	_ "modernc.org/sqlite" // pure-Go driver, registers "sqlite"
 )
@@ -147,7 +147,7 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	// One connection: household load is tiny, and a single writer means no
-	// SQLITE_BUSY surprises. Readers in other processes (ot export, backups)
+	// SQLITE_BUSY surprises. Readers in other processes (byname export, backups)
 	// still work thanks to WAL.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)

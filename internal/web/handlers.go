@@ -7,12 +7,12 @@ import (
 	"strconv"
 	"strings"
 
-	"otterly-go/internal/app"
-	"otterly-go/internal/link"
-	"otterly-go/internal/store"
+	"byname/internal/app"
+	"byname/internal/link"
+	"byname/internal/store"
 )
 
-// follow handles ot/<name>[/<rest>] (redirect) and ot/<name>+ (preview).
+// follow handles nym/<name>[/<rest>] (redirect) and nym/<name>+ (preview).
 func (s *Server) follow(w http.ResponseWriter, r *http.Request) {
 	p := strings.TrimPrefix(r.URL.EscapedPath(), "/")
 	nameEsc, rest, _ := strings.Cut(p, "/")
@@ -315,8 +315,8 @@ func (s *Server) revert(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, linkPath(l.Name), http.StatusSeeOther)
 }
 
-// keyword serves browser search-keyword queries: "ot wiki some page" arrives
-// as /_/go?q=wiki+some+page and goes to ot/wiki/some/page; anything that is
+// keyword serves browser search-keyword queries: "nym wiki some page" arrives
+// as /_/go?q=wiki+some+page and goes to nym/wiki/some/page; anything that is
 // not a link becomes a search.
 func (s *Server) keyword(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))

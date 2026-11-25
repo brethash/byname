@@ -18,9 +18,9 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"otterly-go/internal/app"
-	"otterly-go/internal/store"
-	"otterly-go/internal/whois"
+	"byname/internal/app"
+	"byname/internal/store"
+	"byname/internal/whois"
 )
 
 const (
@@ -49,13 +49,13 @@ type harness struct {
 
 func newHarness(t *testing.T, mod ...func(*Config)) *harness {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "ot.db"))
+	st, err := store.Open(filepath.Join(t.TempDir(), "byname.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	hosts := []string{"ot", "ot.example.ts.net"}
+	hosts := []string{"nym", "nym.example.ts.net"}
 	svc := app.New(st, app.Config{SelfHosts: hosts, Logger: quiet})
 	cfg := Config{
 		Hosts:       hosts,
@@ -82,7 +82,7 @@ func host(h string) reqOpt      { return func(r *http.Request) { r.Host = h } }
 func header(k, v string) reqOpt { return func(r *http.Request) { r.Header.Set(k, v) } }
 func formBody() reqOpt          { return header("Content-Type", "application/x-www-form-urlencoded") }
 func jsonBody() reqOpt          { return header("Content-Type", "application/json") }
-func sameOrigin() reqOpt        { return header("Origin", "http://ot") }
+func sameOrigin() reqOpt        { return header("Origin", "http://nym") }
 
 func (h *harness) do(method, target string, body string, opts ...reqOpt) *httptest.ResponseRecorder {
 	h.t.Helper()
@@ -90,9 +90,9 @@ func (h *harness) do(method, target string, body string, opts ...reqOpt) *httpte
 	if body != "" {
 		rd = strings.NewReader(body)
 	}
-	r := httptest.NewRequest(method, "http://ot"+target, rd)
+	r := httptest.NewRequest(method, "http://nym"+target, rd)
 	r.RemoteAddr = alicePeer
-	r.Host = "ot"
+	r.Host = "nym"
 	for _, o := range opts {
 		o(r)
 	}
@@ -136,8 +136,8 @@ func TestRedirects(t *testing.T) {
 		"/wiki/":           "https://wiki.example.com/start",
 		"/wiki/a/b%20c":    "https://wiki.example.com/start/a/b%20c",
 		"/wiki?x=1":        "https://wiki.example.com/start?x=1",
-		"/gh/otterly":      "https://github.com/otterly",
-		"/gh/otterly/more": "https://github.com/otterly",
+		"/gh/octocat":      "https://github.com/octocat",
+		"/gh/octocat/more": "https://github.com/octocat",
 	}
 	for path, want := range cases {
 		w := h.do("GET", path, "")
@@ -184,7 +184,7 @@ func TestPreviewAndNotFound(t *testing.T) {
 
 	w = h.do("GET", "/wik", "")
 	expectStatus(t, w, http.StatusNotFound)
-	if !strings.Contains(w.Body.String(), "Did you mean") || !strings.Contains(w.Body.String(), "ot/wikipedia") {
+	if !strings.Contains(w.Body.String(), "Did you mean") || !strings.Contains(w.Body.String(), "nym/wikipedia") {
 		t.Fatal("not-found page has no suggestions")
 	}
 
@@ -208,14 +208,14 @@ func TestOnlyTailnetPeers(t *testing.T) {
 		if w.Code != want {
 			t.Errorf("peer %s: status %d, want %d", addr, w.Code, want)
 		}
-		if want == http.StatusForbidden && !strings.Contains(w.Body.String(), "ot is not reachable") {
+		if want == http.StatusForbidden && !strings.Contains(w.Body.String(), "nym is not reachable") {
 			t.Errorf("peer %s: body %q does not name the service", addr, w.Body.String())
 		}
 	}
 }
 
 // The service name is whatever the first host is; nothing in the UI is
-// hard-wired to "ot".
+// hard-wired to "nym".
 func TestCustomServiceName(t *testing.T) {
 	h := newHarness(t, func(c *Config) { c.Hosts = []string{"go", "go.example.ts.net"} })
 	h.create("wiki", "https://wiki.example")
@@ -229,11 +229,11 @@ func TestCustomServiceName(t *testing.T) {
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {
 			t.Errorf("GET %s: %d, body lacks %q", path, w.Code, want)
 		}
-		if path != "/_/favicon.svg" && strings.Contains(w.Body.String(), "ot/") {
-			t.Errorf("GET %s still says ot/", path)
+		if path != "/_/favicon.svg" && strings.Contains(w.Body.String(), "nym/") {
+			t.Errorf("GET %s still says nym/", path)
 		}
 	}
-	expectStatus(t, h.do("GET", "/", "", host("ot")), http.StatusMisdirectedRequest)
+	expectStatus(t, h.do("GET", "/", "", host("nym")), http.StatusMisdirectedRequest)
 	if w := h.do("GET", "/", "", peer("203.0.113.9:5000"), host("go")); !strings.Contains(w.Body.String(), "go is not reachable") {
 		t.Errorf("403 body = %q", w.Body.String())
 	}
@@ -241,7 +241,7 @@ func TestCustomServiceName(t *testing.T) {
 
 func TestFaviconLabel(t *testing.T) {
 	for display, want := range map[string]string{
-		"ot":     ">ot/<",
+		"nym":    ">nym/<",
 		"go.lan": ">go/<",
 		"web":    ">web/<",
 		"links":  ">l/<",
@@ -281,16 +281,16 @@ func TestLANAccessWhenConfigured(t *testing.T) {
 func TestHostAllowlist(t *testing.T) {
 	h := newHarness(t)
 	for hst, want := range map[string]int{
-		"ot":                 http.StatusOK,
-		"OT":                 http.StatusOK,
-		"ot:80":              http.StatusOK,
-		"ot.":                http.StatusOK,
-		"ot.example.ts.net":  http.StatusOK,
-		"ot.example.ts.net.": http.StatusOK,
-		"evil.example":       http.StatusMisdirectedRequest, // DNS rebinding
-		"100.64.0.5":         http.StatusMisdirectedRequest,
-		"ot:8080":            http.StatusMisdirectedRequest,
-		"":                   http.StatusMisdirectedRequest,
+		"nym":                 http.StatusOK,
+		"NYM":                 http.StatusOK,
+		"nym:80":              http.StatusOK,
+		"nym.":                http.StatusOK,
+		"nym.example.ts.net":  http.StatusOK,
+		"nym.example.ts.net.": http.StatusOK,
+		"evil.example":        http.StatusMisdirectedRequest, // DNS rebinding
+		"100.64.0.5":          http.StatusMisdirectedRequest,
+		"nym:8080":            http.StatusMisdirectedRequest,
+		"":                    http.StatusMisdirectedRequest,
 	} {
 		if w := h.do("GET", "/", "", host(hst)); w.Code != want {
 			t.Errorf("Host %q: status %d, want %d", hst, w.Code, want)
@@ -304,7 +304,7 @@ func TestCrossOriginWritesBlocked(t *testing.T) {
 	attacks := []reqOpt{
 		header("Origin", "http://evil.example"),
 		header("Origin", "null"),
-		header("Origin", "http://ot.evil.example"),
+		header("Origin", "http://nym.evil.example"),
 		header("Sec-Fetch-Site", "cross-site"),
 	}
 	for i, a := range attacks {
@@ -385,7 +385,7 @@ func TestFormValidationErrors(t *testing.T) {
 	h := newHarness(t)
 	for _, c := range []struct{ name, target, want string }{
 		{"x", "javascript:alert(1)", "must start with http"},
-		{"x", "http://ot/x", "points back"},
+		{"x", "http://nym/x", "points back"},
 		{"bad name", "https://x.example", "must start with a letter"},
 		{"x", "https://bank.example@evil.example", "user name or password"},
 	} {
@@ -534,7 +534,7 @@ func TestAPI(t *testing.T) {
 	expectStatus(t, w, http.StatusCreated)
 	var got apiLink
 	json.Unmarshal(w.Body.Bytes(), &got)
-	if got.Name != "a" || got.Rev != 1 || got.URL != "http://ot/a" || got.CreatedBy != "alice@example.com (alice-laptop)" {
+	if got.Name != "a" || got.Rev != 1 || got.URL != "http://nym/a" || got.CreatedBy != "alice@example.com (alice-laptop)" {
 		t.Fatalf("created = %+v", got)
 	}
 
@@ -580,12 +580,12 @@ func TestAPI(t *testing.T) {
 func TestKeywordSearch(t *testing.T) {
 	h := newHarness(t)
 	h.create("gh", "https://github.com/{1}/{2}")
-	w := h.do("GET", "/_/go?q="+url.QueryEscape("gh otterly go"), "")
+	w := h.do("GET", "/_/go?q="+url.QueryEscape("gh octocat go"), "")
 	expectStatus(t, w, http.StatusFound)
-	if loc := w.Header().Get("Location"); loc != "https://github.com/otterly/go" {
+	if loc := w.Header().Get("Location"); loc != "https://github.com/octocat/go" {
 		t.Fatalf("keyword → %q", loc)
 	}
-	w = h.do("GET", "/_/go?q="+url.QueryEscape("ot/gh/a b"), "")
+	w = h.do("GET", "/_/go?q="+url.QueryEscape("nym/gh/a b"), "")
 	if loc := w.Header().Get("Location"); loc != "https://github.com/a/b" {
 		t.Fatalf("keyword with prefix → %q", loc)
 	}
@@ -622,14 +622,14 @@ func TestMiscEndpoints(t *testing.T) {
 	for path, want := range map[string]string{
 		"/_/static/style.css":   "--accent",
 		"/_/static/app.js":      "data-confirm",
-		"/favicon.ico":          ">ot/</text>",
-		"/_/favicon.svg":        ">ot/</text>",
+		"/favicon.ico":          ">nym/</text>",
+		"/_/favicon.svg":        ">nym/</text>",
 		"/robots.txt":           "Disallow: /",
-		"/_/opensearch.xml":     "http://ot/_/go?q={searchTerms}",
-		"/_/export":             `"format": "ot-links"`,
+		"/_/opensearch.xml":     "http://nym/_/go?q={searchTerms}",
+		"/_/export":             `"format": "byname-links"`,
 		"/_/whoami":             "alice@example.com",
 		"/_/activity":           "create",
-		"/_/links?sort=popular": "ot/a",
+		"/_/links?sort=popular": "nym/a",
 		"/_/new?name=fresh":     `value="fresh"`,
 	} {
 		w := h.do("GET", path, "")

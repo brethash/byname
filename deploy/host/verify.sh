@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2015 # pass/warn/fail always succeed, so `test && pass || fail` is safe here.
-# ot-verify — check this host matches the ot security baseline (milestone M0).
-# Run on the host (Pi or cloud server): sudo ot-verify
+# byname-verify — check this host matches the byname security baseline (milestone M0).
+# Run on the host (Pi or cloud server): sudo byname-verify
 # Exit status is the number of failed checks (0 = all good).
 set -uo pipefail
 
@@ -11,16 +11,16 @@ fail() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAILS=$((FAILS + 1)); }
 warn() { printf '  \033[33mWARN\033[0m %s\n' "$*"; }
 section() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
-[[ $EUID -eq 0 ]] || { echo "run as root: sudo ot-verify" >&2; exit 1; }
+[[ $EUID -eq 0 ]] || { echo "run as root: sudo byname-verify" >&2; exit 1; }
 
 # What bootstrap.sh recorded about this host. Parsed, not sourced.
-conf() { sed -n "s/^$1=//p" /etc/ot/host.conf 2>/dev/null | head -1; }
+conf() { sed -n "s/^$1=//p" /etc/byname/host.conf 2>/dev/null | head -1; }
 PLATFORM="$(conf PLATFORM)"; PLATFORM="${PLATFORM:-pi}"
 FIRST_HOST="$(conf NAME)"
-if [[ -r /etc/ot/ot.env ]]; then
-  FIRST_HOST="$(sed -n 's/^OT_HOSTS=\([^,]*\).*/\1/p' /etc/ot/ot.env)"
+if [[ -r /etc/byname/byname.env ]]; then
+  FIRST_HOST="$(sed -n 's/^BYNAME_HOSTS=\([^,]*\).*/\1/p' /etc/byname/byname.env)"
 fi
-FIRST_HOST="${FIRST_HOST:-ot}"
+FIRST_HOST="${FIRST_HOST:-nym}"
 TAG="$(conf TAG)"; TAG="${TAG:-tag:$FIRST_HOST}"
 TAILSCALE="$(conf TAILSCALE)"; TAILSCALE="${TAILSCALE:-1}"
 PUBLIC_DOMAIN="$(conf PUBLIC_DOMAIN)"
@@ -54,7 +54,7 @@ origins=("Debian")
 [[ "$TAILSCALE" == 1 ]] && origins+=("Tailscale")
 [[ "$PLATFORM" == pi ]] && origins+=("Raspberry Pi Foundation")
 for origin in "${origins[@]}"; do
-  if apt-cache policy 2>/dev/null | grep -q "o=$origin,"; then pass "apt origin '$origin' present (matches upgrade pattern)"; else warn "apt origin '$origin' not seen; check 52ot-unattended-upgrades patterns against 'apt-cache policy'"; fi
+  if apt-cache policy 2>/dev/null | grep -q "o=$origin,"; then pass "apt origin '$origin' present (matches upgrade pattern)"; else warn "apt origin '$origin' not seen; check 52byname-unattended-upgrades patterns against 'apt-cache policy'"; fi
 done
 journal="$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null)"
 if [[ "$PLATFORM" == pi ]]; then
@@ -71,18 +71,18 @@ else
 fi
 
 section "Firewall"
-if nft list table inet ot_filter >/dev/null 2>&1; then pass "table inet ot_filter loaded"; else fail "ot firewall not loaded (systemctl status ot-firewall)"; fi
-if nft list chain inet ot_filter input 2>/dev/null | grep -q 'policy drop'; then pass "input policy drop"; else fail "input policy is not drop"; fi
+if nft list table inet byname_filter >/dev/null 2>&1; then pass "table inet byname_filter loaded"; else fail "byname firewall not loaded (systemctl status byname-firewall)"; fi
+if nft list chain inet byname_filter input 2>/dev/null | grep -q 'policy drop'; then pass "input policy drop"; else fail "input policy is not drop"; fi
 if systemctl is-enabled --quiet nftables.service 2>/dev/null; then fail "Debian nftables.service enabled (its 'flush ruleset' wipes tailscale rules)"; else pass "Debian nftables.service disabled"; fi
 # LAN access must be on (or off) consistently in all three layers.
 LAN_MODE=off
-[[ -f /etc/systemd/system/ot.service.d/10-lan-access.conf ]] && LAN_MODE=on
-lan_nft=off; nft list chain inet ot_filter input 2>/dev/null | grep -q 'ip saddr .* tcp dport 80 accept' && lan_nft=on
-# systemd reads ot.local.env after ot.env, so its value wins.
-ALLOW_CIDRS="$(sed -n 's/^OT_ALLOW_CIDRS=//p' /etc/ot/ot.env /etc/ot/ot.local.env 2>/dev/null | tail -1)"
+[[ -f /etc/systemd/system/byname.service.d/10-lan-access.conf ]] && LAN_MODE=on
+lan_nft=off; nft list chain inet byname_filter input 2>/dev/null | grep -q 'ip saddr .* tcp dport 80 accept' && lan_nft=on
+# systemd reads byname.local.env after byname.env, so its value wins.
+ALLOW_CIDRS="$(sed -n 's/^BYNAME_ALLOW_CIDRS=//p' /etc/byname/byname.env /etc/byname/byname.local.env 2>/dev/null | tail -1)"
 lan_env=off; printf '%s\n' "$ALLOW_CIDRS" | tr ',' '\n' | grep -vE '^(100\.64\.0\.0/10|fd7a:115c:a1e0::/48|127\.0\.0\.1/32|::1/128)$' | grep -q . && lan_env=on
 if ! [[ "$LAN_MODE" == "$lan_nft" && "$LAN_MODE" == "$lan_env" ]]; then
-  fail "LAN access inconsistent: systemd drop-in=$LAN_MODE firewall=$lan_nft OT_ALLOW_CIDRS=$lan_env; re-run bootstrap.sh"
+  fail "LAN access inconsistent: systemd drop-in=$LAN_MODE firewall=$lan_nft BYNAME_ALLOW_CIDRS=$lan_env; re-run bootstrap.sh"
 elif [[ "$PLATFORM" == cloud && "$LAN_MODE" == on ]]; then
   fail "LAN access is on, on a cloud server (that would be the provider's network); re-run bootstrap.sh"
 elif [[ "$PLATFORM" == cloud ]]; then
@@ -97,12 +97,12 @@ section "Tailscale"
 TS_IP="?"
 if [[ "$TAILSCALE" == 0 ]]; then
   pass "not used (bootstrap.sh --no-tailscale)"
-  grep -q '^OT_NO_WHOIS=true' /etc/ot/ot.env && pass "WhoIs off" || fail "OT_NO_WHOIS isn't true without Tailscale (re-run bootstrap.sh)"
+  grep -q '^BYNAME_NO_WHOIS=true' /etc/byname/byname.env && pass "WhoIs off" || fail "BYNAME_NO_WHOIS isn't true without Tailscale (re-run bootstrap.sh)"
   if systemctl is-active --quiet tailscaled 2>/dev/null; then
     fail "tailscaled is running without Tailscale configured: Tailscale SSH bypasses the firewall (sudo tailscale down; sudo systemctl disable --now tailscaled)"
   fi
   if grep -qE '100\.64\.0\.0/10|fd7a:115c' <<<"$ALLOW_CIDRS"; then
-    fail "OT_ALLOW_CIDRS still trusts tailnet ranges without Tailscale (re-run bootstrap.sh)"
+    fail "BYNAME_ALLOW_CIDRS still trusts tailnet ranges without Tailscale (re-run bootstrap.sh)"
   else
     pass "tailnet ranges not trusted"
   fi
@@ -124,19 +124,19 @@ mapfile -t ts <<<"$ts_check"
 [[ ",${ts[2]}," == *",$TAG,"* ]] && pass "node tagged $TAG (no key expiry)" || warn "node not tagged $TAG (tags: '${ts[2]}'); its key will expire"
 TS_IP="${ts[3]}"
 if tailscale debug prefs 2>/dev/null | grep -q '"RunSSH": true'; then pass "Tailscale SSH enabled"; else warn "Tailscale SSH off (tailscale set --ssh)"; fi
-if grep -q "${ts[4]:-no-suffix}" /etc/ot/ot.env 2>/dev/null; then pass "OT_HOSTS includes the tailnet FQDN"; else warn "OT_HOSTS lacks $FIRST_HOST.${ts[4]} (re-run bootstrap.sh)"; fi
+if grep -q "${ts[4]:-no-suffix}" /etc/byname/byname.env 2>/dev/null; then pass "BYNAME_HOSTS includes the tailnet FQDN"; else warn "BYNAME_HOSTS lacks $FIRST_HOST.${ts[4]} (re-run bootstrap.sh)"; fi
 fi
 
-section "ot service"
-if systemctl is-active --quiet ot.service; then pass "ot.service active ($(readlink /usr/local/lib/ot/current))"; else fail "ot.service not active (journalctl -u ot)"; fi
-score="$(systemd-analyze security ot.service --no-pager 2>/dev/null | sed -n 's/.*Overall exposure level for ot.service: \([0-9.]*\).*/\1/p')"
-if [[ -n "$score" ]] && awk -v s="$score" 'BEGIN{exit !(s <= 2.0)}'; then pass "sandbox exposure $score (≤ 2.0)"; else fail "sandbox exposure '${score:-?}' (want ≤ 2.0): systemd-analyze security ot.service"; fi
+section "byname service"
+if systemctl is-active --quiet byname.service; then pass "byname.service active ($(readlink /usr/local/lib/byname/current))"; else fail "byname.service not active (journalctl -u byname)"; fi
+score="$(systemd-analyze security byname.service --no-pager 2>/dev/null | sed -n 's/.*Overall exposure level for byname.service: \([0-9.]*\).*/\1/p')"
+if [[ -n "$score" ]] && awk -v s="$score" 'BEGIN{exit !(s <= 2.0)}'; then pass "sandbox exposure $score (≤ 2.0)"; else fail "sandbox exposure '${score:-?}' (want ≤ 2.0): systemd-analyze security byname.service"; fi
 # Over the tailnet address with Tailscale, else over localhost.
 CHECK_IP="127.0.0.1"
 [[ "$TS_IP" != "?" ]] && CHECK_IP="$TS_IP"
 health="$(curl -fsS -m 5 -H "Host: $FIRST_HOST" "http://$CHECK_IP/_/healthz" 2>&1)"
 if grep -q '"status": "ok"' <<<"$health"; then pass "health OK over $CHECK_IP"; else fail "health check failed: $health"; fi
-if grep -q '"low_disk": true' <<<"$health"; then fail "low disk space for /var/lib/ot: $(grep -o '"disk_free_mb": [0-9]*' <<<"$health")"; fi
+if grep -q '"low_disk": true' <<<"$health"; then fail "low disk space for /var/lib/byname: $(grep -o '"disk_free_mb": [0-9]*' <<<"$health")"; fi
 if [[ "$TS_IP" != "?" ]]; then
   who="$(curl -fsS -m 5 -H "Host: $FIRST_HOST" "http://$TS_IP/_/whoami" 2>&1)"
   if grep -q 'Tailscale user' <<<"$who"; then pass "WhoIs works from the sandboxed service"; else fail "WhoIs not working from the service (see http://$FIRST_HOST/_/whoami)"; fi
@@ -144,12 +144,12 @@ fi
 code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H 'Host: evil.example' "http://$CHECK_IP/_/healthz")"
 [[ "$code" == "421" ]] && pass "foreign Host header refused (421)" || fail "foreign Host header got $code, want 421"
 
-# Public address: your domain, or Tailscale Funnel. ot.local.env overrides ot.env.
-PUBLIC_URL="$(sed -n 's/^OT_PUBLIC_URL=//p' /etc/ot/ot.env /etc/ot/ot.local.env 2>/dev/null | tail -1)"
-SOCK="$(sed -n 's/^OT_PUBLIC_LISTEN=unix://p' /etc/ot/ot.env /etc/ot/ot.local.env 2>/dev/null | tail -1)"
-SOCK="${SOCK:-/run/ot/public.sock}"
+# Public address: your domain, or Tailscale Funnel. byname.local.env overrides byname.env.
+PUBLIC_URL="$(sed -n 's/^BYNAME_PUBLIC_URL=//p' /etc/byname/byname.env /etc/byname/byname.local.env 2>/dev/null | tail -1)"
+SOCK="$(sed -n 's/^BYNAME_PUBLIC_LISTEN=unix://p' /etc/byname/byname.env /etc/byname/byname.local.env 2>/dev/null | tail -1)"
+SOCK="${SOCK:-/run/byname/public.sock}"
 # Everything Tailscale Serve/Funnel publishes on this host. Anything other
-# than ot's socket would skip ot's sign-in.
+# than byname's socket would skip byname's sign-in.
 serve_check="$( { command -v tailscale >/dev/null && tailscale serve status --json 2>/dev/null; } | python3 -c '
 import json, sys
 sock = "unix:" + sys.argv[1]
@@ -176,19 +176,19 @@ print("; ".join(others))
 mapfile -t serve <<<"$serve_check"
 if [[ -z "$PUBLIC_URL" && "${serve[0]:-0}" == 1 ]]; then
   section "Public address"
-  fail "Tailscale Funnel is on, but ot's public address is off: whatever it publishes skips sign-in (tailscale funnel status; turn it off with: tailscale funnel reset)"
+  fail "Tailscale Funnel is on, but byname's public address is off: whatever it publishes skips sign-in (tailscale funnel status; turn it off with: tailscale funnel reset)"
 fi
 if [[ -n "$PUBLIC_URL" ]]; then
   section "Public address ($PUBLIC_URL)"
   PUBLIC_HOST="${PUBLIC_URL#https://}"
-  [[ -f /etc/systemd/system/ot.service.d/20-public.conf ]] && pass "drop-in 20-public.conf present" || fail "20-public.conf missing (re-run bootstrap.sh)"
-  systemctl show ot.service -p Requires --value | grep -qw ot-firewall.service && pass "ot.service requires the firewall" || fail "ot.service doesn't require ot-firewall.service (re-run bootstrap.sh)"
+  [[ -f /etc/systemd/system/byname.service.d/20-public.conf ]] && pass "drop-in 20-public.conf present" || fail "20-public.conf missing (re-run bootstrap.sh)"
+  systemctl show byname.service -p Requires --value | grep -qw byname-firewall.service && pass "byname.service requires the firewall" || fail "byname.service doesn't require byname-firewall.service (re-run bootstrap.sh)"
   [[ -z "${serve[2]:-}" ]] && pass "nothing else published by Tailscale Serve/Funnel" || fail "Serve/Funnel also publishes: ${serve[2]} (these skip sign-in; remove them)"
   if [[ -n "$PUBLIC_DOMAIN" ]]; then
-    # Served directly: DNS, the firewall, a real certificate, and ot's gate.
+    # Served directly: DNS, the firewall, a real certificate, and byname's gate.
     resolved="$(getent ahosts "$PUBLIC_DOMAIN" | awk '{print $1}' | sort -u | paste -sd' ' -)"
     [[ -n "$resolved" ]] && pass "$PUBLIC_DOMAIN resolves to $resolved" || fail "$PUBLIC_DOMAIN doesn't resolve: create its A/AAAA records (tofu output dns_records)"
-    nft list chain inet ot_filter input 2>/dev/null | grep -q 'tcp dport { 80, 443 } accept' && pass "firewall open for tcp/80 and tcp/443" || fail "firewall doesn't open tcp/80 and tcp/443 (re-run bootstrap.sh --public-domain)"
+    nft list chain inet byname_filter input 2>/dev/null | grep -q 'tcp dport { 80, 443 } accept' && pass "firewall open for tcp/80 and tcp/443" || fail "firewall doesn't open tcp/80 and tcp/443 (re-run bootstrap.sh --public-domain)"
     [[ "${serve[0]:-0}" == 1 ]] && fail "Tailscale Funnel is on as well; turn it off: tailscale funnel reset"
     # Through the real TLS listener, with certificate checks. The first
     # request may wait while Let's Encrypt issues the certificate.
@@ -196,7 +196,7 @@ if [[ -n "$PUBLIC_URL" ]]; then
     if [[ "$out" == 303* && "$out" == *"/_/signin?next="* ]]; then
       pass "https://$PUBLIC_DOMAIN has a valid certificate and asks for sign-in"
     else
-      fail "https://$PUBLIC_DOMAIN: '$out' (want 303 to /_/signin; certificate problems usually mean DNS doesn't point here yet: journalctl -u ot | grep -i acme)"
+      fail "https://$PUBLIC_DOMAIN: '$out' (want 303 to /_/signin; certificate problems usually mean DNS doesn't point here yet: journalctl -u byname | grep -i acme)"
     fi
     # Port 80 from an address the private listener doesn't trust (this
     # host's own public address) must only redirect.
@@ -205,25 +205,25 @@ if [[ -n "$PUBLIC_URL" ]]; then
       [[ "$own" == *:* ]] && own="[$own]"
       out="$(curl -s -o /dev/null -m 5 -w '%{http_code} %{redirect_url}' -H "Host: $FIRST_HOST" "http://$own/_/new")"
       [[ "$out" == "301 https://$PUBLIC_DOMAIN/_/new" ]] && pass "port 80 only redirects untrusted peers to https" ||
-        fail "port 80 from $own got '$out', want 301 to https://$PUBLIC_DOMAIN/_/new (check OT_ALLOW_CIDRS)"
+        fail "port 80 from $own got '$out', want 301 to https://$PUBLIC_DOMAIN/_/new (check BYNAME_ALLOW_CIDRS)"
     fi
     days="$(echo | openssl s_client -connect 127.0.0.1:443 -servername "$PUBLIC_DOMAIN" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | sed 's/notAfter=//')"
-    [[ -n "$days" ]] && pass "certificate valid until $days (ot renews it automatically)"
-    perm="$(stat -c '%a %U' /var/lib/ot/acme 2>/dev/null)"
-    [[ "$perm" == "700 ot" ]] && pass "/var/lib/ot/acme is 0700, owner ot" || fail "/var/lib/ot/acme is '${perm:-missing}', want '700 ot'"
+    [[ -n "$days" ]] && pass "certificate valid until $days (byname renews it automatically)"
+    perm="$(stat -c '%a %U' /var/lib/byname/acme 2>/dev/null)"
+    [[ "$perm" == "700 byname" ]] && pass "/var/lib/byname/acme is 0700, owner byname" || fail "/var/lib/byname/acme is '${perm:-missing}', want '700 byname'"
   else
     if [[ "${serve[0]:-0}" == 1 && "${serve[1]:-0}" -gt 0 ]]; then pass "Tailscale Funnel → $SOCK"; else fail "Funnel isn't publishing $SOCK (tailscale funnel status; re-run bootstrap.sh --funnel)"; fi
     perm="$(stat -c '%a %U' "$(dirname "$SOCK")" 2>/dev/null)"
-    [[ "$perm" == "700 ot" ]] && pass "$(dirname "$SOCK") is 0700, owner ot" || fail "$(dirname "$SOCK") is '${perm:-missing}', want '700 ot'"
+    [[ "$perm" == "700 byname" ]] && pass "$(dirname "$SOCK") is 0700, owner byname" || fail "$(dirname "$SOCK") is '${perm:-missing}', want '700 byname'"
     perm="$(stat -c '%a %U' "$SOCK" 2>/dev/null)"
-    [[ "$perm" == "600 ot" ]] && pass "socket is 0600, owner ot" || fail "$SOCK is '${perm:-missing}', want '600 ot'"
+    [[ "$perm" == "600 byname" ]] && pass "socket is 0600, owner byname" || fail "$SOCK is '${perm:-missing}', want '600 byname'"
   fi
   providers=0
   for p in google slack; do
     P="${p^^}"
-    grep -Eq "^OT_${P}_CLIENT_ID=.+" /etc/ot/ot.local.env 2>/dev/null || continue
+    grep -Eq "^BYNAME_${P}_CLIENT_ID=.+" /etc/byname/byname.local.env 2>/dev/null || continue
     providers=$((providers + 1))
-    secret="/etc/credstore/ot.$p-client-secret"
+    secret="/etc/credstore/byname.$p-client-secret"
     perm="$(stat -c '%a %U' "$secret" 2>/dev/null)"
     [[ "$perm" == "600 root" || "$perm" == "400 root" ]] && pass "$p client secret ($secret, $perm)" || fail "$secret is '${perm:-missing}', want 0600 root"
     if [[ $p == google ]]; then endpoint=https://oauth2.googleapis.com/token; else endpoint=https://slack.com/api/openid.connect.token; fi
@@ -236,8 +236,8 @@ if [[ -n "$PUBLIC_URL" ]]; then
       fail "$p token endpoint unreachable from this host ($endpoint)"
     fi
   done
-  [[ $providers -gt 0 ]] && pass "$providers sign-in provider(s) configured" || fail "no sign-in provider in /etc/ot/ot.local.env (ot won't start)"
-  # Funnel: ot's own gate, through the socket, with the headers tailscaled
+  [[ $providers -gt 0 ]] && pass "$providers sign-in provider(s) configured" || fail "no sign-in provider in /etc/byname/byname.local.env (byname won't start)"
+  # Funnel: byname's own gate, through the socket, with the headers tailscaled
   # would add.
   if [[ -z "$PUBLIC_DOMAIN" ]]; then
   hdr=(-H "X-Forwarded-Host: $PUBLIC_HOST" -H 'X-Forwarded-Proto: https')
@@ -253,19 +253,19 @@ if [[ -n "$PUBLIC_URL" ]]; then
   fi
 fi
 
-if nft list chain inet ot_filter input 2>/dev/null | grep -qE '^\s*tcp dport 22 accept'; then
+if nft list chain inet byname_filter input 2>/dev/null | grep -qE '^\s*tcp dport 22 accept'; then
   warn "the host firewall lets SSH in from anywhere (--ssh-from any): the provider firewall (ssh_cidrs) must limit it"
 fi
 
 section "Backups"
-if systemctl is-enabled --quiet ot-backup.timer 2>/dev/null; then
-  pass "ot-backup.timer enabled"
-  last="$(systemctl show ot-backup.service -p Result --value)"
-  [[ "$last" == "success" ]] && pass "last backup run: success" || warn "last backup result: $last (journalctl -u ot-backup)"
+if systemctl is-enabled --quiet byname-backup.timer 2>/dev/null; then
+  pass "byname-backup.timer enabled"
+  last="$(systemctl show byname-backup.service -p Result --value)"
+  [[ "$last" == "success" ]] && pass "last backup run: success" || warn "last backup result: $last (journalctl -u byname-backup)"
 else
   warn "backups not configured (docs/operations.md → Backups)"
 fi
-snaps="$(find /var/lib/ot/snapshots -name 'ot-*.db' 2>/dev/null | wc -l)"
+snaps="$(find /var/lib/byname/snapshots -name 'byname-*.db' 2>/dev/null | wc -l)"
 [[ "$snaps" -gt 0 ]] && pass "$snaps local snapshot(s)" || warn "no local snapshots yet"
 
 section "Checks to run from other devices"

@@ -1,16 +1,16 @@
 #!/usr/sbin/nft -f
-# ot firewall — rendered by bootstrap.sh into /etc/ot/firewall.nft.
-# Input policy DROP; reachable: what bootstrap.sh's flags turn on (ot on the
+# byname firewall — rendered by bootstrap.sh into /etc/byname/firewall.nft.
+# Input policy DROP; reachable: what bootstrap.sh's flags turn on (byname on the
 # tailnet, the LAN, or its public domain; OpenSSH from the LAN, the tailnet or
 # --ssh-from addresses).
 # Output is not filtered.
 #
 # The first two lines make reloading idempotent: create the table if missing,
-# then delete and recreate it. Nothing outside table inet ot_filter is touched.
-table inet ot_filter
-delete table inet ot_filter
+# then delete and recreate it. Nothing outside table inet byname_filter is touched.
+table inet byname_filter
+delete table inet byname_filter
 
-table inet ot_filter {
+table inet byname_filter {
   chain input {
     type filter hook input priority filter; policy drop;
 
@@ -26,13 +26,13 @@ table inet ot_filter {
     udp sport 547 udp dport 546 accept
 
     # With Tailscale: its direct (peer-to-peer WireGuard) path, which never
-    # answers a packet that isn't from a known peer, and ot on the tailnet.
+    # answers a packet that isn't from a known peer, and byname on the tailnet.
     @TAILNET_RULES@
 
-    # ot on the home LAN (Pi with --lan-access).
+    # byname on the home LAN (Pi with --lan-access).
     @LAN_HTTP_RULE@
 
-    # ot's public domain (--public-domain): HTTPS, and HTTP for redirects and
+    # byname's public domain (--public-domain): HTTPS, and HTTP for redirects and
     # Let's Encrypt's checks.
     @PUBLIC_RULE@
 

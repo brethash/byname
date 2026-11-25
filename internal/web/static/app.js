@@ -1,4 +1,4 @@
-// ot/ — progressive enhancement only; every page works without JavaScript.
+// byname — progressive enhancement only; every page works without JavaScript.
 'use strict';
 
 // Ask before destructive actions (forms marked data-confirm).

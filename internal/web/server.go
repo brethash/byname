@@ -1,4 +1,4 @@
-// Package web is ot's HTTP layer: redirects, the server-rendered UI and the
+// Package web is byname's HTTP layer: redirects, the server-rendered UI and the
 // JSON API, behind a fixed security middleware chain.
 package web
 
@@ -20,17 +20,17 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"otterly-go/internal/app"
-	"otterly-go/internal/auth"
-	"otterly-go/internal/link"
-	"otterly-go/internal/store"
-	"otterly-go/internal/whois"
+	"byname/internal/app"
+	"byname/internal/auth"
+	"byname/internal/link"
+	"byname/internal/store"
+	"byname/internal/whois"
 )
 
 // Config configures the server.
 type Config struct {
 	// Hosts are the accepted Host header values; the first is the display
-	// name used in the UI ("ot" → "ot/wiki").
+	// name used in the UI ("nym" → "nym/wiki").
 	Hosts []string
 	// AllowedNets are the peer networks allowed to connect (the tailnet).
 	AllowedNets []netip.Prefix
@@ -52,9 +52,9 @@ type Config struct {
 	// one of Providers.
 	//
 	// With PublicBehindTailscale, the address is the tailnet name
-	// (https://ot.<tailnet>.ts.net) published by Tailscale Funnel, which
-	// proxies to ot over a private socket; ot trusts tailscaled's forwarding
-	// headers there, and tailnet devices skip sign-in. Without it, ot serves
+	// (https://nym.<tailnet>.ts.net) published by Tailscale Funnel, which
+	// proxies to byname over a private socket; byname trusts tailscaled's forwarding
+	// headers there, and tailnet devices skip sign-in. Without it, byname serves
 	// its own domain (https://hg.example.com) with TLS directly: no header is
 	// trusted and every request counts as coming from the internet.
 	PublicURL             string
@@ -64,7 +64,7 @@ type Config struct {
 	SessionTTL time.Duration
 }
 
-// Server serves ot over HTTP.
+// Server serves byname over HTTP.
 type Server struct {
 	cfg     Config
 	svc     *app.Service
@@ -166,7 +166,7 @@ func (s *Server) setupPublic() error {
 	u, err := url.Parse(cfg.PublicURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
 		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("public URL %q: want https://host, e.g. https://hg.example.com or https://ot.<tailnet>.ts.net", cfg.PublicURL)
+		return fmt.Errorf("public URL %q: want https://host, e.g. https://hg.example.com or https://nym.<tailnet>.ts.net", cfg.PublicURL)
 	}
 	if len(cfg.Providers) == 0 {
 		return errors.New("a public URL needs at least one sign-in provider (Google or Slack)")
@@ -287,8 +287,8 @@ func (s *Server) serveFavicon(w http.ResponseWriter, _ *http.Request) {
 }
 
 // faviconSVG draws the service name as the browser-tab icon: the whole name
-// when it is short ("ot/", "go/"), otherwise its first letter ("l/" for
-// "links"). Only the first DNS label is used, so "ot.lan" draws "ot/".
+// when it is short ("nym/", "go/"), otherwise its first letter ("l/" for
+// "links"). Only the first DNS label is used, so "nym.lan" draws "nym/".
 func faviconSVG(display string) []byte {
 	name, _, _ := strings.Cut(display, ".")
 	if utf8.RuneCountInString(name) > 3 {
@@ -316,7 +316,7 @@ func robots(w http.ResponseWriter, _ *http.Request) {
 
 // view is the data every page template receives.
 type view struct {
-	Host    string // display host, e.g. "ot"
+	Host    string // display host, e.g. "nym"
 	Version string
 	Query   string // search box contents
 	Title   string
@@ -361,7 +361,7 @@ type formData struct {
 }
 
 // parsePages parses every page with host as what people type before
-// "/name" ("ot", or the public https name for people on the internet).
+// "/name" ("nym", or the public https name for people on the internet).
 func (s *Server) parsePages(host string, internet bool) (map[string]*template.Template, error) {
 	pages := make(map[string]*template.Template)
 	for _, name := range pageNames {
