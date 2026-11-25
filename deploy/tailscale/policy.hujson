@@ -1,0 +1,27 @@
+// Tailscale policy additions for ot. Merge these into your tailnet policy
+// file (admin console → Access controls). Replace <you@example.com> and
+// <admin> (the Pi's admin user name).
+//
+// NOTE: these grants only restrict anything once the default allow-all rule
+// is removed from your policy, which affects your whole tailnet. Keeping
+// allow-all is acceptable: ot enforces its own tailnet-only checks.
+{
+  "tagOwners": {
+    "tag:ot": ["<you@example.com>"],
+  },
+
+  "grants": [
+    // Household members (not tagged servers, not shared-in users) may use ot.
+    {"src": ["autogroup:member"], "dst": ["tag:ot"], "ip": ["tcp:80"]},
+  ],
+
+  "ssh": [
+    // Tailscale SSH to the Pi for you only, with periodic browser re-check.
+    {
+      "action": "check",
+      "src":    ["<you@example.com>"],
+      "dst":    ["tag:ot"],
+      "users":  ["<admin>"],
+    },
+  ],
+}

@@ -1,0 +1,19 @@
+# Loads ot's nftables table. Deliberately NOT Debian's nftables.service, whose
+# /etc/nftables.conf starts with "flush ruleset" and would wipe tailscaled's
+# own rules. This only ever touches table inet ot_filter.
+[Unit]
+Description=ot firewall (nftables table inet ot_filter)
+DefaultDependencies=no
+Before=network-pre.target
+Wants=network-pre.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/ot/firewall.nft
+ExecReload=/usr/sbin/nft -f /etc/ot/firewall.nft
+ExecStop=/usr/sbin/nft delete table inet ot_filter
+
+[Install]
+WantedBy=multi-user.target

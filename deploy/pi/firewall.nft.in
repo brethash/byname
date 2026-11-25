@@ -1,0 +1,36 @@
+#!/usr/sbin/nft -f
+# ot firewall — rendered by bootstrap.sh into /etc/ot/firewall.nft.
+# Input policy DROP; the only listeners reachable are ot on tailscale0 and
+# break-glass OpenSSH from the LAN. Output is not filtered.
+#
+# The first two lines make reloading idempotent: create the table if missing,
+# then delete and recreate it. Nothing outside table inet ot_filter is touched.
+table inet ot_filter
+delete table inet ot_filter
+
+table inet ot_filter {
+  chain input {
+    type filter hook input priority filter; policy drop;
+
+    iif "lo" accept
+    ct state established,related accept
+    ct state invalid drop
+
+    # ICMP/ICMPv6 (path MTU discovery, IPv6 neighbour discovery).
+    meta l4proto { icmp, ipv6-icmp } accept
+
+    # DHCP and DHCPv6 replies to this host.
+    udp sport 67 udp dport 68 accept
+    udp sport 547 udp dport 546 accept
+
+    # Tailscale direct (peer-to-peer WireGuard) path; without it traffic
+    # still flows via DERP relays, just slower.
+    udp dport 41641 accept
+
+    # ot, on the tailnet only.
+    iifname "tailscale0" tcp dport 80 accept
+
+    # Break-glass OpenSSH, key-only, from the home LAN only.
+    ip saddr @LAN_SUBNET@ tcp dport 22 accept
+  }
+}
