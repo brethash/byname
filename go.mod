@@ -6,6 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.48.0
 	github.com/aws/aws-sdk-go-v2/config v1.33.21
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.116.0
+	golang.org/x/crypto v0.59.0
 	golang.org/x/time v0.16.0
 	modernc.org/sqlite v1.63.0
 )
@@ -34,9 +35,11 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/exp/typeparams v0.0.0-20231108232855-2478ac86f678 // indirect
 	golang.org/x/mod v0.43.0 // indirect
+	golang.org/x/net v0.63.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/telemetry v0.0.0-20261116191925-e77a43154acb // indirect
+	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/tools v0.53.0 // indirect
 	golang.org/x/vuln v1.10.0 // indirect
 	honnef.co/go/tools v0.8.2 // indirect

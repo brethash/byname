@@ -7,13 +7,18 @@
 #   Pi:     sudo deploy/host/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24 \
 #                [--name ot] [--lan-access --lan-domain lan]
 #   cloud:  sudo deploy/host/bootstrap.sh --admin-user admin [--name ot]
+#   cloud without Tailscale:
+#           sudo deploy/host/bootstrap.sh --admin-user admin --name hg --no-tailscale \
+#                --ssh-from 203.0.113.7/32 --public-domain hg.example.com
 #
-# Either can add --public: publish the service on the internet through
-# Tailscale Funnel, with Google or Slack sign-in (docs/public-access.md).
+# Public access, with Google or Slack sign-in (docs/public-access.md):
+# --public-domain serves your own domain directly; --funnel publishes the
+# tailnet name through Tailscale Funnel.
 #
-# Safe to re-run: every step checks before it changes anything. On a Pi it
+# Safe to re-run: every step checks before it changes anything, and each run
+# applies exactly the flags given (leave one out to turn it off). On a Pi it
 # never runs `tailscale up` for you (that needs your browser); it prints the
-# command. Cloud servers joined the tailnet on first boot.
+# command. Cloud servers with Tailscale joined the tailnet on first boot.
 set -euo pipefail
 
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,15 +31,19 @@ LAN_SUBNET=""
 LAN_ACCESS=0
 LAN_DOMAIN=""
 FORCE_FIREWALL=0
-PUBLIC=0
+TAILSCALE=1
+SSH_FROM=""
+FUNNEL=0
+PUBLIC_DOMAIN=""
 PUBLIC_SOCK=/run/ot/public.sock
 REBOOT_NEEDED=0
 
 usage() {
   cat <<'USAGE'
-usage: sudo bootstrap.sh --admin-user USER [--name NAME] [--tag tag:NAME] [--platform pi|cloud]
-                         [--lan-subnet CIDR [--lan-access] [--lan-domain DOMAIN]] [--public]
-                         [--force-firewall]
+usage: sudo bootstrap.sh --admin-user USER [--name NAME] [--platform pi|cloud]
+                         [--tag tag:NAME | --no-tailscale] [--ssh-from CIDR[,CIDR...]]
+                         [--lan-subnet CIDR [--lan-access] [--lan-domain DOMAIN]]
+                         [--public-domain DOMAIN | --funnel] [--force-firewall]
 
   --admin-user      the account you log in with (must already have an SSH key)
   --name            the service name people type, e.g. ot for ot/wiki (default: ot).
@@ -42,10 +51,19 @@ usage: sudo bootstrap.sh --admin-user USER [--name NAME] [--tag tag:NAME] [--pla
   --tag             Tailscale tag for this host (default: tag:NAME); your tailnet
                     policy must define it
   --platform        pi or cloud (default: detected; a Raspberry Pi is "pi")
-  --public          also publish NAME on the internet at https://NAME.<tailnet>.ts.net
-                    through Tailscale Funnel. People outside the tailnet must sign in with
-                    Google or Slack; set those up first (docs/public-access.md). Re-run
-                    without it to make NAME tailnet-only again.
+  --no-tailscale    don't use Tailscale: no tailnet access and no Tailscale SSH. On a cloud
+                    server you then need --ssh-from, and --public-domain so people can use it
+  --ssh-from        where OpenSSH may be reached from on the internet (cloud): addresses like
+                    203.0.113.7/32 (comma-separated), or "any" to leave the address filter to
+                    the provider's firewall (ssh_cidrs), which you can change from your Mac.
+                    A specific address here locks you out if your address changes.
+
+Public access (Google or Slack sign-in must be set up first: docs/public-access.md):
+  --public-domain   serve your own domain, e.g. hg.example.com, over HTTPS with a Let's
+                    Encrypt certificate. Opens TCP 80 and 443; its DNS must point here.
+                    Everyone reaching it signs in (tailnet devices can still use NAME/).
+  --funnel          publish https://NAME.<tailnet>.ts.net through Tailscale Funnel instead:
+                    no open ports; tailnet devices skip sign-in, everyone else signs in
 
 Raspberry Pi only:
   --lan-subnet      your home LAN, e.g. 192.168.1.0/24 (break-glass SSH is allowed from here)
@@ -69,7 +87,10 @@ while [[ $# -gt 0 ]]; do
     --lan-access) LAN_ACCESS=1; shift ;;
     --lan-domain) LAN_DOMAIN="${2:?}"; shift 2 ;;
     --force-firewall) FORCE_FIREWALL=1; shift ;;
-    --public) PUBLIC=1; shift ;;
+    --no-tailscale) TAILSCALE=0; shift ;;
+    --ssh-from) SSH_FROM="${2:?}"; shift 2 ;;
+    --funnel) FUNNEL=1; shift ;;
+    --public-domain) PUBLIC_DOMAIN="${2:?}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -114,11 +135,46 @@ ADMIN_HOME="$(getent passwd "$ADMIN_USER" | cut -d: -f6)"
 [[ "$NAME" != "localhost" ]] || die "--name localhost would shadow this machine's loopback name"
 [[ -n "$TAG" ]] || TAG="tag:$NAME"
 [[ "$TAG" =~ ^tag:[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || die "invalid --tag '$TAG' (want tag:something)"
+PUBLIC=0
+[[ $FUNNEL -eq 1 || -n "$PUBLIC_DOMAIN" ]] && PUBLIC=1
+[[ $FUNNEL -eq 1 && -n "$PUBLIC_DOMAIN" ]] && die "choose one of --funnel and --public-domain"
+[[ $FUNNEL -eq 1 && $TAILSCALE -eq 0 ]] && die "--funnel needs Tailscale; use --public-domain without it"
+if [[ -n "$PUBLIC_DOMAIN" ]]; then
+  [[ "$PUBLIC_DOMAIN" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]] ||
+    die "--public-domain must be a lower-case DNS name like hg.example.com (no https://, no path)"
+  [[ "$PUBLIC_DOMAIN" != *.ts.net ]] || die "--public-domain can't be a ts.net name; use --funnel for that"
+fi
+if [[ -n "$SSH_FROM" && "$SSH_FROM" != any ]]; then
+  python3 - "$SSH_FROM" <<'PY' || die "--ssh-from must be \"any\" or comma-separated networks like 203.0.113.7/32, no wider than /16 (IPv4) or /48 (IPv6)"
+import ipaddress, sys
+for c in sys.argv[1].split(","):
+    n = ipaddress.ip_network(c.strip(), strict=True)
+    if n.prefixlen < (16 if n.version == 4 else 48):
+        sys.exit(1)
+PY
+fi
+[[ "$SSH_FROM" == any && "$PLATFORM" == pi ]] &&
+  die "--ssh-from any is for cloud servers, whose provider firewall filters SSH; a Pi has none (it allows SSH from --lan-subnet)"
+if [[ $TAILSCALE -eq 0 && "$PLATFORM" == cloud ]]; then
+  [[ -n "$SSH_FROM" ]] || die "without Tailscale, --ssh-from is required so you can still reach this server over SSH (\"any\" leaves the address filter to the provider's firewall)"
+  # Sign-in has to be configured on the server before --public-domain, so a
+  # first run without it is expected.
+  [[ -n "$PUBLIC_DOMAIN" ]] || warn "no --public-domain yet: nobody can use the service until you add it (after setting up sign-in)"
+fi
+if [[ $TAILSCALE -eq 0 ]] && systemctl is-active --quiet tailscaled 2>/dev/null; then
+  # Tailscale SSH is answered by tailscaled itself, past the host firewall,
+  # so leaving it running would leave tailnet SSH open. Stopping it here could
+  # cut off the session running this script.
+  die "--no-tailscale, but tailscaled is running (Tailscale SSH bypasses the firewall). From an OpenSSH session, run: sudo tailscale down; sudo systemctl disable --now tailscaled. Then re-run"
+fi
+if [[ $TAILSCALE -eq 0 && "$PLATFORM" == pi && $LAN_ACCESS -eq 0 && -z "$PUBLIC_DOMAIN" ]]; then
+  die "without Tailscale, a Pi needs --lan-access or --public-domain: otherwise nobody can use the service"
+fi
 if [[ $PUBLIC -eq 1 ]]; then
   # Sign-in must be configured before the public address opens: ot refuses
   # to start with a public address and no way to sign in.
   sysv="$(systemctl --version | awk 'NR==1 {print $2}')"
-  [[ "$sysv" =~ ^[0-9]+$ && "$sysv" -ge 254 ]] || die "--public needs systemd 254 or later (ImportCredential); this is ${sysv:-unknown}"
+  [[ "$sysv" =~ ^[0-9]+$ && "$sysv" -ge 254 ]] || die "public access needs systemd 254 or later (ImportCredential); this is ${sysv:-unknown}"
   SIGNIN=""
   for p in google slack; do
     P="${p^^}"
@@ -129,7 +185,7 @@ if [[ $PUBLIC -eq 1 ]]; then
     grep -Eq "^$list=.+" /etc/ot/ot.local.env || die "OT_${P}_CLIENT_ID is set but $list is empty: say who may sign in"
     SIGNIN+=" $p"
   done
-  [[ -n "$SIGNIN" ]] || die "--public needs Google or Slack sign-in in /etc/ot/ot.local.env first (docs/public-access.md)"
+  [[ -n "$SIGNIN" ]] || die "public access needs Google or Slack sign-in in /etc/ot/ot.local.env first (docs/public-access.md)"
 fi
 if [[ "$PLATFORM" == pi ]]; then
   python3 - "$LAN_SUBNET" <<'PY' || die "--lan-subnet must be an IPv4 network like 192.168.1.0/24"
@@ -140,7 +196,7 @@ PY
   [[ "$LAN_DOMAIN" == "local" ]] && die "--lan-domain local is mDNS, not router DNS; use your router's domain (lan, home, home.arpa…)"
   ok "$PRETTY_NAME on $(uname -m) (Raspberry Pi), service $NAME, admin $ADMIN_USER, LAN $LAN_SUBNET, LAN access $([[ $LAN_ACCESS -eq 1 ]] && echo on || echo off)"
 else
-  ok "$PRETTY_NAME on $(uname -m) (cloud), service $NAME, admin $ADMIN_USER, tailnet only"
+  ok "$PRETTY_NAME on $(uname -m) (cloud), service $NAME, admin $ADMIN_USER, Tailscale $([[ $TAILSCALE -eq 1 ]] && echo on || echo off)"
 fi
 
 # ---------------------------------------------------------------- hostname
@@ -202,7 +258,9 @@ ok "installed unattended-upgrades, nftables, sqlite3, curl"
 
 # ---------------------------------------------------------------- tailscale
 step "Tailscale"
-if ! command -v tailscale >/dev/null 2>&1; then
+if [[ $TAILSCALE -eq 0 ]]; then
+  ok "not used (--no-tailscale)"
+elif ! command -v tailscale >/dev/null 2>&1; then
   repo="https://pkgs.tailscale.com/stable/${ID}/${VERSION_CODENAME}"
   curl -fsSL "$repo.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg
   curl -fsSL "$repo.tailscale-keyring.list" -o /etc/apt/sources.list.d/tailscale.list
@@ -212,13 +270,17 @@ if ! command -v tailscale >/dev/null 2>&1; then
 else
   ok "tailscale $(tailscale version | head -1) present"
 fi
-systemctl enable --now tailscaled >/dev/null 2>&1
+if [[ $TAILSCALE -eq 1 ]]; then
+  systemctl enable --now tailscaled >/dev/null 2>&1
+fi
 
 # ---------------------------------------------------------------- ssh
 if [[ "$PLATFORM" == pi ]]; then
   step "OpenSSH (break-glass: key-only, LAN-only via firewall)"
-else
+elif [[ $TAILSCALE -eq 1 ]]; then
   step "OpenSSH (fallback to Tailscale SSH: key-only, tailnet-only via firewall)"
+else
+  step "OpenSSH (key-only; reachable as --ssh-from says)"
 fi
 # 01- sorts before any Imager/cloud-init drop-in; sshd keeps the first value.
 cat > /etc/ssh/sshd_config.d/01-ot-hardening.conf <<EOF
@@ -330,9 +392,12 @@ ok "users ot, ot-backup (in group ot); /usr/local/lib/ot, /etc/ot, /etc/credstor
 
 # ---------------------------------------------------------------- config
 step "Service configuration"
-TS_SUFFIX="$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys
+TS_SUFFIX=""
+if [[ $TAILSCALE -eq 1 ]]; then
+  TS_SUFFIX="$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("MagicDNSSuffix") or "")
 except Exception: print("")' || true)"
+fi
 HOSTS="$NAME"
 [[ -n "$TS_SUFFIX" ]] && HOSTS+=",$NAME.$TS_SUFFIX"
 [[ -n "$LAN_DOMAIN" ]] && HOSTS+=",$NAME.$LAN_DOMAIN"
@@ -347,23 +412,35 @@ if [[ $LAN_ACCESS -eq 1 ]]; then
     warn "could not find this Pi's address inside $LAN_SUBNET; LAN devices must use the name"
   fi
 fi
-ALLOW="100.64.0.0/10,fd7a:115c:a1e0::/48,127.0.0.1/32,::1/128"
+ALLOW="127.0.0.1/32,::1/128"
+[[ $TAILSCALE -eq 1 ]] && ALLOW="100.64.0.0/10,fd7a:115c:a1e0::/48,$ALLOW"
 [[ $LAN_ACCESS -eq 1 ]] && ALLOW+=",$LAN_SUBNET"
+NO_WHOIS=false
+[[ $TAILSCALE -eq 0 ]] && NO_WHOIS=true
 PUBLIC_URL=""
-if [[ $PUBLIC -eq 1 ]]; then
-  [[ -n "$TS_SUFFIX" ]] || die "--public: join the tailnet first (tailscale up), then re-run"
+PUBLIC_LISTEN=""
+if [[ -n "$PUBLIC_DOMAIN" ]]; then
+  PUBLIC_URL="https://$PUBLIC_DOMAIN"
+  PUBLIC_LISTEN=":443"
+  getent ahosts "$PUBLIC_DOMAIN" >/dev/null 2>&1 ||
+    warn "$PUBLIC_DOMAIN doesn't resolve yet: ot can't get its certificate until its DNS points here"
+fi
+if [[ $FUNNEL -eq 1 ]]; then
+  [[ -n "$TS_SUFFIX" ]] || die "--funnel: join the tailnet first (tailscale up), then re-run"
   ts_ver="$(tailscale version 2>/dev/null | head -1)"
   python3 -c 'import sys; v = tuple(int(x) for x in sys.argv[1].split("-")[0].split(".")[:2]); sys.exit(v < (1, 98))' "$ts_ver" 2>/dev/null ||
-    die "--public needs Tailscale 1.98 or later (Funnel to a unix socket); this is ${ts_ver:-unknown}: apt-get install tailscale"
+    die "--funnel needs Tailscale 1.98 or later (Funnel to a unix socket); this is ${ts_ver:-unknown}: apt-get install tailscale"
   DNS_NAME="$(tailscale status --json --peers=false 2>/dev/null | python3 -c 'import json, sys
 print(((json.load(sys.stdin).get("Self") or {}).get("DNSName") or "").rstrip(".").lower())')"
   [[ "$DNS_NAME" == "$NAME.$TS_SUFFIX" ]] ||
     die "this machine's tailnet name is '$DNS_NAME', not $NAME.$TS_SUFFIX (is another device named $NAME?)"
   PUBLIC_URL="https://$DNS_NAME"
+  PUBLIC_LISTEN="unix:$PUBLIC_SOCK"
 fi
 # ot.env is fully managed (rewritten on every run); local overrides go in
 # ot.local.env, which ot.service reads afterwards.
-sed -e "s|@OT_HOSTS@|$HOSTS|" -e "s|@OT_ALLOW_CIDRS@|$ALLOW|" -e "s|@OT_PUBLIC_URL@|$PUBLIC_URL|" \
+sed -e "s|@OT_HOSTS@|$HOSTS|" -e "s|@OT_ALLOW_CIDRS@|$ALLOW|" -e "s|@OT_NO_WHOIS@|$NO_WHOIS|" \
+  -e "s|@OT_PUBLIC_URL@|$PUBLIC_URL|" -e "s|@OT_PUBLIC_LISTEN@|$PUBLIC_LISTEN|" \
   "$DEPLOY_DIR/host/ot.env.in" > /etc/ot/ot.env
 chmod 0644 /etc/ot/ot.env
 [[ -f /etc/ot/ot.local.env ]] || printf '# Local overrides for /etc/ot/ot.env (same OT_* variables). Kept across bootstrap runs.\n' > /etc/ot/ot.local.env
@@ -373,13 +450,17 @@ cat > /etc/ot/host.conf <<EOF
 PLATFORM=$PLATFORM
 NAME=$NAME
 TAG=$TAG
+TAILSCALE=$TAILSCALE
 LAN_SUBNET=$LAN_SUBNET
+SSH_FROM=$SSH_FROM
+PUBLIC_DOMAIN=$PUBLIC_DOMAIN
+FUNNEL=$FUNNEL
 EOF
 chmod 0644 /etc/ot/host.conf
 ok "wrote /etc/ot/ot.env (OT_HOSTS=$HOSTS)"
 ok "allowed peers: $ALLOW"
 [[ -n "$PUBLIC_URL" ]] && ok "public address $PUBLIC_URL, sign-in with:$SIGNIN"
-[[ -n "$TS_SUFFIX" ]] || warn "tailnet not joined yet; re-run this script after 'tailscale up' to add the full tailnet name to OT_HOSTS"
+[[ $TAILSCALE -eq 0 || -n "$TS_SUFFIX" ]] || warn "tailnet not joined yet; re-run this script after 'tailscale up' to add the full tailnet name to OT_HOSTS"
 # systemd's IP filter for ot.service only allows the tailnet and localhost;
 # LAN access adds the LAN subnet in a drop-in.
 install -d -m 0755 /etc/systemd/system/ot.service.d
@@ -392,27 +473,28 @@ else
 fi
 if [[ $PUBLIC -eq 1 ]]; then
   cat > /etc/systemd/system/ot.service.d/20-public.conf <<EOF
-# Managed by ot bootstrap.sh --public
+# Managed by ot bootstrap.sh (--public-domain or --funnel)
 [Unit]
 # IPAddressAllow=any below also lifts systemd's inbound filter on port 80, so
 # don't run without the firewall.
 Requires=ot-firewall.service
 
 [Service]
-# Tailscale Serve/Funnel proxies the public address to $PUBLIC_SOCK. The
-# directory is 0700, so only ot and root (tailscaled) can reach the socket;
-# ot trusts tailscaled's forwarding headers there.
+# With --funnel, Tailscale Serve/Funnel proxies the public address to
+# $PUBLIC_SOCK. The directory is 0700, so only ot and root (tailscaled) can
+# reach the socket; ot trusts tailscaled's forwarding headers there.
 RuntimeDirectory=ot
 RuntimeDirectoryMode=0700
 # Google and Slack client secrets: /etc/credstore/ot.google-client-secret,
 # /etc/credstore/ot.slack-client-secret.
 ImportCredential=ot.*
-# Sign-in calls Google's and Slack's token endpoints over HTTPS, so ot needs
-# outbound internet access. Inbound is still limited by the firewall and by
-# ot's own peer-address check (the unit requires the firewall).
+# Sign-in calls Google's and Slack's token endpoints, and --public-domain
+# serves the internet and fetches certificates from Let's Encrypt, so ot needs
+# internet access. What reaches it is still limited by the firewall (which
+# the unit requires) and by ot's own checks.
 IPAddressAllow=any
 EOF
-  ok "ot.service: public socket, credentials, outbound HTTPS (drop-in 20-public.conf)"
+  ok "ot.service: credentials, internet access, requires the firewall (drop-in 20-public.conf)"
 else
   rm -f /etc/systemd/system/ot.service.d/20-public.conf
 fi
@@ -425,14 +507,43 @@ if [[ $LAN_ACCESS -eq 1 ]]; then
 else
   LAN_HTTP_RULE="# (no LAN HTTP access; on a Pi, bootstrap.sh --lan-access turns it on)"
 fi
+# SSH: from the LAN on a Pi, over the tailnet on a cloud server with
+# Tailscale, and from --ssh-from addresses (required on a cloud server
+# without Tailscale).
+SSH_RULES=()
+SSH_NETS=""
 if [[ "$PLATFORM" == pi ]]; then
-  SSH_RULE="ip saddr $LAN_SUBNET tcp dport 22 accept"
+  SSH_RULES+=("ip saddr $LAN_SUBNET tcp dport 22 accept")
   SSH_NETS="$LAN_SUBNET"
-else
-  SSH_RULE='iifname "tailscale0" tcp dport 22 accept'
+elif [[ $TAILSCALE -eq 1 ]]; then
+  SSH_RULES+=('iifname "tailscale0" tcp dport 22 accept')
   SSH_NETS="$TAILNET_NETS"
 fi
+if [[ "$SSH_FROM" == any ]]; then
+  # Key-only sshd; the provider's firewall (ssh_cidrs) does the address
+  # filtering, so a changed home address is fixed with `tofu apply`.
+  SSH_RULES+=("tcp dport 22 accept")
+  SSH_NETS="0.0.0.0/0 ::/0"
+elif [[ -n "$SSH_FROM" ]]; then
+  v4="$(tr ',' '\n' <<<"$SSH_FROM" | grep -v ':' | paste -sd, - || true)"
+  v6="$(tr ',' '\n' <<<"$SSH_FROM" | grep ':' | paste -sd, - || true)"
+  [[ -n "$v4" ]] && SSH_RULES+=("ip saddr { $v4 } tcp dport 22 accept")
+  [[ -n "$v6" ]] && SSH_RULES+=("ip6 saddr { $v6 } tcp dport 22 accept")
+  SSH_NETS="$SSH_NETS ${SSH_FROM//,/ }"
+fi
+SSH_RULE="$(printf '%s; ' "${SSH_RULES[@]}")"
+if [[ $TAILSCALE -eq 1 ]]; then
+  TAILNET_RULES='udp dport 41641 accept; iifname "tailscale0" tcp dport 80 accept'
+else
+  TAILNET_RULES="# (no Tailscale)"
+fi
+if [[ -n "$PUBLIC_DOMAIN" ]]; then
+  PUBLIC_RULE="tcp dport { 80, 443 } accept"
+else
+  PUBLIC_RULE="# (no public domain; bootstrap.sh --public-domain opens 80 and 443)"
+fi
 sed -e "s|@SSH_RULE@|$SSH_RULE|" -e "s|@LAN_HTTP_RULE@|$LAN_HTTP_RULE|" \
+  -e "s|@TAILNET_RULES@|$TAILNET_RULES|" -e "s|@PUBLIC_RULE@|$PUBLIC_RULE|" \
   "$DEPLOY_DIR/host/firewall.nft.in" > /etc/ot/firewall.nft.new
 nft -c -f /etc/ot/firewall.nft.new || die "firewall rules failed to parse"
 # Lockout guard: an OpenSSH session from an address the new rules don't allow
@@ -456,7 +567,7 @@ for line in sys.stdin:
 ' $SSH_NETS)"
   if [[ -n "$outside" ]]; then
     rm -f /etc/ot/firewall.nft.new
-    die "OpenSSH session(s) from outside ${SSH_NETS// /, }: $outside — fix --lan-subnet, use Tailscale SSH, or pass --force-firewall"
+    die "OpenSSH session(s) from outside ${SSH_NETS// /, }: $outside — fix --lan-subnet or --ssh-from, use Tailscale SSH, or pass --force-firewall"
   fi
 fi
 mv /etc/ot/firewall.nft.new /etc/ot/firewall.nft
@@ -467,7 +578,11 @@ systemctl daemon-reload
 systemctl enable ot-firewall.service >/dev/null 2>&1
 systemctl restart ot-firewall.service
 if [[ "$PLATFORM" == cloud ]]; then
-  ok "input policy drop; allowed: tcp/80 and tcp/22 on tailscale0, udp/41641, ICMP, DHCP"
+  allowed=""
+  [[ $TAILSCALE -eq 1 ]] && allowed+="tcp/80 and tcp/22 on tailscale0, udp/41641, "
+  [[ -n "$SSH_FROM" ]] && allowed+="tcp/22 from $SSH_FROM, "
+  [[ -n "$PUBLIC_DOMAIN" ]] && allowed+="tcp/80 and tcp/443 from anywhere, "
+  ok "input policy drop; allowed: ${allowed}ICMP, DHCP"
 elif [[ $LAN_ACCESS -eq 1 ]]; then
   ok "input policy drop; allowed: tcp/80 on tailscale0 and from $LAN_SUBNET, tcp/22 from $LAN_SUBNET, udp/41641, ICMP, DHCP"
 else
@@ -495,7 +610,7 @@ fi
 ok "installed ot-verify and ot-restore to /usr/local/sbin"
 
 # ---------------------------------------------------------------- public
-if [[ $PUBLIC -eq 1 ]]; then
+if [[ $FUNNEL -eq 1 ]]; then
   step "Public address (Tailscale Funnel)"
   # Funnel to ot's socket; also answers tailnet devices on https://. The
   # timeout stops a first-time consent prompt from hanging this script.
@@ -504,16 +619,20 @@ if [[ $PUBLIC -eq 1 ]]; then
     die "tailscale funnel failed: turn on HTTPS certificates (admin console → DNS) and give $TAG the funnel attribute in your tailnet policy (deploy/tailscale/policy.hujson), then re-run"
   fi
   ok "$PUBLIC_URL is on the internet (Funnel → $PUBLIC_SOCK); outside the tailnet it asks for sign-in"
-elif tailscale funnel status 2>/dev/null | grep -qF "$PUBLIC_SOCK"; then
+elif command -v tailscale >/dev/null 2>&1 && tailscale funnel status 2>/dev/null | grep -qF "$PUBLIC_SOCK"; then
   step "Public address"
   tailscale funnel --https=443 off >/dev/null 2>&1 || true
   tailscale serve --https=443 off >/dev/null 2>&1 || true
-  ok "Funnel off: $NAME is tailnet-only again"
+  ok "Funnel off"
+fi
+if [[ -n "$PUBLIC_DOMAIN" ]]; then
+  step "Public address (your domain)"
+  ok "$PUBLIC_URL: ot gets its certificate from Let's Encrypt on the first visit; everyone signs in"
 fi
 
 # ---------------------------------------------------------------- summary
 step "Next steps"
-if ! tailscale status >/dev/null 2>&1; then
+if [[ $TAILSCALE -eq 1 ]] && ! tailscale status >/dev/null 2>&1; then
   if [[ "$PLATFORM" == pi ]]; then
     cat <<EOF
     1. Join the tailnet (opens a login URL; your policy must define $TAG first):
@@ -525,7 +644,11 @@ EOF
   fi
 fi
 [[ $REBOOT_NEEDED -eq 1 ]] && echo "    * Reboot to apply config.txt changes: sudo reboot"
-echo "    * Deploy from your Mac:  make deploy TARGET=$ADMIN_USER@$NAME"
+if [[ $TAILSCALE -eq 1 ]]; then
+  echo "    * Deploy from your Mac:  make deploy TARGET=$ADMIN_USER@$NAME"
+else
+  echo "    * Deploy from your Mac:  make deploy TARGET=$ADMIN_USER@${PUBLIC_DOMAIN:-SERVER-ADDRESS}"
+fi
 echo "    * Then check everything: sudo ot-verify"
 if [[ $PUBLIC -eq 1 ]]; then
   echo "    * From a phone with Wi-Fi and Tailscale off, open $PUBLIC_URL/_/whoami: it should ask you to sign in"

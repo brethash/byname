@@ -12,8 +12,12 @@ locals {
     tag        = local.tag
     admin_user = local.admin_user
     ssh_key    = trimspace(var.ssh_public_key)
-    auth_key   = var.tailscale_auth_key
+    auth_key   = var.tailscale ? var.tailscale_auth_key : ""
   })
+
+  public   = var.public_domain != ""
+  ssh_ipv4 = [for c in var.ssh_cidrs : c if !strcontains(c, ":")]
+  ssh_ipv6 = [for c in var.ssh_cidrs : c if strcontains(c, ":")]
 
   # Monthly list prices (USD) on 2026-11-24, from `aws lightsail get-bundles`.
   bundle_prices = {
@@ -51,20 +55,91 @@ resource "aws_lightsail_instance" "server" {
       condition     = strcontains(local.bundle_id, "_ipv6_") == !var.ipv4
       error_message = "bundle_id ${local.bundle_id} does not match ipv4 = ${var.ipv4}: IPv6-only servers need an *_ipv6_* bundle, dual-stack servers one without."
     }
+    precondition {
+      condition     = !var.tailscale || var.tailscale_auth_key != ""
+      error_message = "tailscale = true needs tailscale_auth_key (TF_VAR_tailscale_auth_key=tskey-auth-…)."
+    }
+    precondition {
+      condition     = var.tailscale || length(var.ssh_cidrs) > 0
+      error_message = "Without Tailscale, set ssh_cidrs to your own address (e.g. [\"203.0.113.7/32\"]) so you can reach the server."
+    }
+    precondition {
+      condition     = var.tailscale || local.public
+      error_message = "Without Tailscale, set public_domain: otherwise nobody can use the service."
+    }
+    precondition {
+      condition     = !local.public || var.ipv4
+      error_message = "public_domain needs ipv4 = true: most of the internet still reaches websites over IPv4, and Sign in with Slack needs it."
+    }
+    precondition {
+      # Lightsail's IPv4 and IPv6 firewalls are separate, and AWS doesn't
+      # document what an SSH rule without IPv4 addresses allows over IPv4.
+      condition     = !var.ipv4 || length(var.ssh_cidrs) == 0 || length(local.ssh_ipv4) > 0
+      error_message = "With ipv4 = true, ssh_cidrs needs at least one IPv4 block (your home IPv4, e.g. 203.0.113.7/32)."
+    }
   }
 }
 
+# A fixed IPv4 address for the domain's A record. Free while attached.
+resource "aws_lightsail_static_ip" "server" {
+  count = local.public ? 1 : 0
+  name  = "${var.name}-ip"
+}
+
+resource "aws_lightsail_static_ip_attachment" "server" {
+  count          = local.public ? 1 : 0
+  static_ip_name = aws_lightsail_static_ip.server[0].name
+  instance_name  = aws_lightsail_instance.server.name
+}
+
 # Replaces Lightsail's default firewall (which opens 22 and 80 to the world)
-# with exactly one rule: Tailscale's WireGuard port, for direct connections.
-# WireGuard never answers a packet that isn't from a known peer.
+# with only what this server needs: Tailscale's WireGuard port (which never
+# answers a packet that isn't from a known peer), OpenSSH from your addresses
+# when there's no Tailscale, and HTTP/HTTPS for a public domain.
 resource "aws_lightsail_instance_public_ports" "server" {
   instance_name = aws_lightsail_instance.server.name
 
-  port_info {
-    protocol   = "udp"
-    from_port  = 41641
-    to_port    = 41641
-    cidrs      = var.ipv4 ? ["0.0.0.0/0"] : null
-    ipv6_cidrs = ["::/0"]
+  dynamic "port_info" {
+    for_each = var.tailscale ? [1] : []
+    content {
+      protocol   = "udp"
+      from_port  = 41641
+      to_port    = 41641
+      cidrs      = var.ipv4 ? ["0.0.0.0/0"] : null
+      ipv6_cidrs = ["::/0"]
+    }
+  }
+
+  dynamic "port_info" {
+    for_each = length(var.ssh_cidrs) > 0 ? [1] : []
+    content {
+      protocol   = "tcp"
+      from_port  = 22
+      to_port    = 22
+      cidrs      = length(local.ssh_ipv4) > 0 ? local.ssh_ipv4 : null
+      ipv6_cidrs = length(local.ssh_ipv6) > 0 ? local.ssh_ipv6 : null
+    }
+  }
+
+  dynamic "port_info" {
+    for_each = local.public ? [80, 443] : []
+    content {
+      protocol   = "tcp"
+      from_port  = port_info.value
+      to_port    = port_info.value
+      cidrs      = ["0.0.0.0/0"]
+      ipv6_cidrs = ["::/0"]
+    }
+  }
+
+  lifecycle {
+    # Checked after every apply, against what AWS actually stored: SSH must
+    # never be open to the whole internet, on IPv4 or IPv6.
+    postcondition {
+      condition = alltrue([for p in self.port_info : !(p.protocol == "tcp" && p.from_port <= 22 && p.to_port >= 22) || (
+        !try(contains(p.cidrs, "0.0.0.0/0"), false) && !try(contains(p.ipv6_cidrs, "::/0"), false)
+      )])
+      error_message = "AWS's firewall now lets SSH (port 22) in from the whole internet. Check: aws lightsail get-instance-port-states --instance-name ${var.name}"
+    }
   }
 }

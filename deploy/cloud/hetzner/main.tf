@@ -22,8 +22,10 @@ locals {
     tag        = local.tag
     admin_user = local.admin_user
     ssh_key    = trimspace(var.ssh_public_key)
-    auth_key   = var.tailscale_auth_key
+    auth_key   = var.tailscale ? var.tailscale_auth_key : ""
   })
+
+  public = var.public_domain != ""
 
   labels = { app = "ot", service = var.name }
 }
@@ -34,19 +36,45 @@ resource "hcloud_ssh_key" "admin" {
   labels     = local.labels
 }
 
-# Inbound: only Tailscale's WireGuard port, for direct connections. WireGuard
-# never answers a packet that isn't from a known peer. Outbound stays open
-# (apt, Tailscale, S3).
+# Inbound: only what this server needs. Tailscale's WireGuard port (which
+# never answers a packet that isn't from a known peer), OpenSSH from your
+# addresses when there's no Tailscale, and HTTP/HTTPS for a public domain.
+# Outbound stays open (apt, Tailscale, S3, Let's Encrypt, sign-in).
 resource "hcloud_firewall" "server" {
   name   = var.name
   labels = local.labels
 
-  rule {
-    direction   = "in"
-    protocol    = "udp"
-    port        = "41641"
-    source_ips  = var.ipv4 ? ["0.0.0.0/0", "::/0"] : ["::/0"]
-    description = "Tailscale direct connections (WireGuard)"
+  dynamic "rule" {
+    for_each = var.tailscale ? [1] : []
+    content {
+      direction   = "in"
+      protocol    = "udp"
+      port        = "41641"
+      source_ips  = var.ipv4 ? ["0.0.0.0/0", "::/0"] : ["::/0"]
+      description = "Tailscale direct connections (WireGuard)"
+    }
+  }
+
+  dynamic "rule" {
+    for_each = length(var.ssh_cidrs) > 0 ? [1] : []
+    content {
+      direction   = "in"
+      protocol    = "tcp"
+      port        = "22"
+      source_ips  = var.ssh_cidrs
+      description = "OpenSSH from your addresses"
+    }
+  }
+
+  dynamic "rule" {
+    for_each = local.public ? ["80", "443"] : []
+    content {
+      direction   = "in"
+      protocol    = "tcp"
+      port        = rule.value
+      source_ips  = ["0.0.0.0/0", "::/0"]
+      description = "ot public domain"
+    }
   }
 }
 
@@ -75,5 +103,22 @@ resource "hcloud_server" "server" {
     # updated by apt, and which type was cheapest-in-stock changes daily.
     # Resize deliberately with `hcloud server change-type --keep-disk`.
     ignore_changes = [user_data, image, ssh_keys, server_type]
+
+    precondition {
+      condition     = !var.tailscale || var.tailscale_auth_key != ""
+      error_message = "tailscale = true needs tailscale_auth_key (TF_VAR_tailscale_auth_key=tskey-auth-…)."
+    }
+    precondition {
+      condition     = var.tailscale || length(var.ssh_cidrs) > 0
+      error_message = "Without Tailscale, set ssh_cidrs to your own address (e.g. [\"203.0.113.7/32\"]) so you can reach the server."
+    }
+    precondition {
+      condition     = var.tailscale || local.public
+      error_message = "Without Tailscale, set public_domain: otherwise nobody can use the service."
+    }
+    precondition {
+      condition     = !local.public || var.ipv4
+      error_message = "public_domain needs ipv4 = true: most of the internet still reaches websites over IPv4, and Sign in with Slack needs it."
+    }
   }
 }

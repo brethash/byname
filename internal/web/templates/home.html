@@ -1,7 +1,7 @@
 {{define "content"}}
 <section class="hero">
   <h1>{{brand}}/</h1>
-  {{if internet}}<p class="muted">{{.Count}} links. Open <code class="wrap">https://{{host}}/name</code> in any browser. On a device with Tailscale, <code>{{brand}}/name</code> works too.</p>
+  {{if internet}}<p class="muted">{{.Count}} links. Open <code class="wrap">https://{{host}}/name</code> in any browser.{{if tailnet}} On a device with Tailscale, <code>{{brand}}/name</code> works too.{{end}}</p>
   {{else}}<p class="muted">{{.Count}} links. Type <code>{{host}}/name</code> in a browser on any device on the tailnet.</p>{{end}}
 </section>
 <div class="grid">

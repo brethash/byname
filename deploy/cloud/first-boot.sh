@@ -6,20 +6,23 @@
 # wrapper runs this with bash and these variables in the environment, each
 # validated by OpenTofu first:
 #
-#   OT_NAME  OT_TAG  OT_ADMIN_USER  OT_SSH_KEY  OT_TS_AUTHKEY
+#   OT_NAME  OT_TAG  OT_ADMIN_USER  OT_SSH_KEY  OT_TS_AUTHKEY (may be empty)
 #
 # Nothing in this file is templated, so it stays plain, shellcheck-able bash.
 #
-# It does only what is needed to reach the server with no public SSH port: a
-# hostname, an admin user with your key, and Tailscale joined with a one-off
-# tagged auth key. deploy/host/bootstrap.sh, run over the tailnet, does the
-# rest. Output: /var/log/cloud-init-output.log.
+# It does only what is needed to reach the server: a hostname, an admin user
+# with your key, and, when OT_TS_AUTHKEY is set, Tailscale joined with that
+# one-off tagged key. Without a key the server doesn't use Tailscale, and you
+# reach it with OpenSSH from the addresses the provider firewall allows.
+# deploy/host/bootstrap.sh does the rest. Output:
+# /var/log/cloud-init-output.log.
 set -euo pipefail
 # The wrapper ran with umask 077 to keep itself private. Files made here must
 # be world-readable where Debian expects it: apt verifies signatures as the
 # unprivileged _apt user and ignores a keyring it can't read.
 umask 022
-: "${OT_NAME:?}" "${OT_TAG:?}" "${OT_ADMIN_USER:?}" "${OT_SSH_KEY:?}" "${OT_TS_AUTHKEY:?}"
+: "${OT_NAME:?}" "${OT_TAG:?}" "${OT_ADMIN_USER:?}" "${OT_SSH_KEY:?}"
+OT_TS_AUTHKEY="${OT_TS_AUTHKEY:-}"
 
 log() { printf 'ot first-boot: %s\n' "$*"; }
 export DEBIAN_FRONTEND=noninteractive
@@ -60,14 +63,18 @@ touch "$home/.ssh/authorized_keys"
 grep -qxF "$OT_SSH_KEY" "$home/.ssh/authorized_keys" || printf '%s\n' "$OT_SSH_KEY" >> "$home/.ssh/authorized_keys"
 chown "$OT_ADMIN_USER:$OT_ADMIN_USER" "$home/.ssh/authorized_keys"
 chmod 0600 "$home/.ssh/authorized_keys"
-# The account has no password (keys and Tailscale SSH only), so sudo can't ask
-# for one.
+# The account has no password (SSH keys and Tailscale SSH only), so sudo can't
+# ask for one.
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$OT_ADMIN_USER" > /etc/sudoers.d/90-ot-admin
 chmod 0440 /etc/sudoers.d/90-ot-admin
 visudo -cqf /etc/sudoers.d/90-ot-admin
 log "admin user $OT_ADMIN_USER"
 
 # ---------------------------------------------------------------- tailscale
+if [[ -z "$OT_TS_AUTHKEY" ]]; then
+  log "no Tailscale auth key: not using Tailscale; next: deploy/host/bootstrap.sh --no-tailscale over SSH"
+  exit 0
+fi
 # shellcheck source=/dev/null
 . /etc/os-release
 repo="https://pkgs.tailscale.com/stable/${ID}/${VERSION_CODENAME}"

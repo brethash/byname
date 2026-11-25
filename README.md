@@ -1,24 +1,31 @@
 # ot/
 
-Household short links (`ot/wiki`, `ot/gh/otterly`) for every device on your
-tailnet, at home or away. They're served from a Raspberry Pi 3B at home (which
-can also serve home-network devices that don't run Tailscale) or from a
-$3.50/month cloud server.
+Household (or team) short links: `ot/wiki`, `ot/gh/otterly`. They're
+served from a Raspberry Pi 3B at home or from a $3.50–$5.00/month cloud
+server. People reach them on any of three paths:
+
+- your tailnet;
+- your home network;
+- your own domain on the internet (`https://hg.example.com/wiki`), with
+  Slack or Google sign-in.
+
+Tailscale is optional.
 
 `ot` is the default name. Choose your own (`go/wiki`, `links/wiki`) with one
 setting: `bootstrap.sh --name go`, or `name = "go"` in `deploy/cloud`.
 
-- **Tailnet first, LAN optional.** Tailscale MagicDNS resolves `ot` on every
-  device running Tailscale, and WireGuard encrypts that traffic. With
-  `--lan-access`, home-network devices without Tailscale can use it too, over
-  plain HTTP and identified by IP address; router DNS resolves `ot` for them.
-- **No logins, full accountability.** Anyone on the tailnet can create or edit
-  a link. Every change records who made it (Tailscale WhoIs), and any earlier
-  version can be restored with one click.
-- **Public access, if you want it.** Optionally publish it on the internet at
-  `https://ot.<tailnet>.ts.net` through Tailscale Funnel. People outside the
-  tailnet sign in with Google or Slack, and only accounts on your allow list
-  get in ([docs/public-access.md](docs/public-access.md)).
+- **On the tailnet, no logins.** Tailscale MagicDNS resolves `ot` on every
+  device running Tailscale, and WireGuard encrypts that traffic. Anyone on
+  the tailnet can create or edit a link. Every change records who made it
+  (Tailscale WhoIs), and any earlier version can be restored with one click.
+- **On the home network, optionally.** With `--lan-access` on a Pi,
+  home-network devices without Tailscale can use it too, over plain HTTP and
+  identified by IP address; router DNS resolves `ot` for them.
+- **On the internet, with sign-in.** Serve your own domain
+  (`https://hg.example.com`, Let's Encrypt certificate; no Tailscale needed),
+  or publish the tailnet name through Tailscale Funnel. People there sign in
+  with Google or Slack, only accounts on your allow list get in, and the
+  history records the account ([docs/public-access.md](docs/public-access.md)).
 - **Small and boring to run.** One static Go binary, SQLite, about 30 MB of RAM,
   near-zero disk writes when idle, automatic OS updates, and hourly
   snapshots to S3.
@@ -65,8 +72,9 @@ deploy/cloud/      OpenTofu for AWS Lightsail and Hetzner, plus the first-boot s
 | Host | Cost per month | Who can use it |
 |---|---|---|
 | Raspberry Pi at home | about $0.30 of electricity | tailnet devices, and optionally home-network devices without Tailscale |
-| AWS Lightsail, IPv6-only ([docs/cloud.md](docs/cloud.md)) | $3.50 | tailnet devices |
-| Hetzner Cloud, cheapest type in stock ([docs/cloud.md](docs/cloud.md)) | €5.99–€17.99 | tailnet devices |
+| AWS Lightsail with your own domain ([docs/cloud.md](docs/cloud.md)) | $5.00 | anyone who signs in with Slack or Google; tailnet devices too if you add Tailscale |
+| AWS Lightsail, IPv6-only, Tailscale ([docs/cloud.md](docs/cloud.md)) | $3.50 | tailnet devices |
+| Hetzner Cloud, cheapest type in stock ([docs/cloud.md](docs/cloud.md)) | €5.99–€17.99, plus IPv4 for a domain | either of the above |
 
 Prices as of 2026-11-24. [docs/operations.md](docs/operations.md) covers Pi
 setup, deploys with automatic rollback, S3 backups and restores, and
@@ -79,10 +87,10 @@ make deploy TARGET=<you>@ot      # builds arm64 + amd64, ships the one the host 
 
 ## Security
 
-Every request on the tailnet address passes these checks before any handler
-runs:
+Every request on the plain-HTTP address passes these checks before any
+handler runs:
 
-1. the peer must be a tailnet address;
+1. the peer must be a tailnet address (or the home LAN with `--lan-access`);
 2. `Host` must be one of `OT_HOSTS` (blocks DNS rebinding);
 3. request size limits;
 4. `Origin` must match on every write (Go's `CrossOriginProtection`);
@@ -96,11 +104,16 @@ host. Redirects are always `302` with `no-store`, so edits take effect
 immediately. The JSON API requires `application/json`, so browsers must send
 a CORS preflight, which is never granted.
 
-The optional public address reaches ot over a socket that only Tailscale can
-open. There, everything except the sign-in pages needs a session from an
-allow-listed Google or Slack account. Tailnet devices are recognised and
-skip sign-in. Sessions are server-side, in `__Host-` cookies that are
-Secure, HttpOnly and SameSite=Lax.
+On the optional public address, everything except the sign-in pages needs a
+session from an allow-listed Google or Slack account. Sessions are
+server-side, in `__Host-` cookies that are Secure, HttpOnly and
+SameSite=Lax.
+
+- **Your own domain**: ot terminates TLS itself, with a Let's Encrypt
+  certificate for that one name. It trusts no proxy headers, and treats
+  every request there as coming from the internet.
+- **Funnel**: requests arrive over a socket that only Tailscale can open, and
+  tailnet devices are recognised and skip sign-in.
 
 On the host, the service runs under a tight systemd sandbox: read-only
 system, syscall filter, only `CAP_NET_BIND_SERVICE`, and only tailnet peers

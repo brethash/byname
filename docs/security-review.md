@@ -204,6 +204,71 @@ Also taken from its hardening notes:
 on cellular. `ot-verify` and the phone check in public-access.md cover these
 on the host.
 
+## Without Tailscale: your own domain (2026-11-25)
+
+Tailscale is now optional. A server can serve its own domain directly
+(`bootstrap.sh --no-tailscale --public-domain hg.example.com`): ot terminates
+TLS with a Let's Encrypt certificate, and everyone signs in with Google or
+Slack. Sign-in, sessions, allow lists and the write limits are the ones
+reviewed above. What changes is the exposure.
+
+**Exposure.**
+
+| Port | Who can reach it |
+|---|---|
+| TCP 443 | The internet. ot's TLS listener: every request counts as coming from the internet and needs a session, except the sign-in pages and static assets. |
+| TCP 80 | The internet. It answers Let's Encrypt's HTTP challenge and redirects everyone else to https. Only peers in `OT_ALLOW_CIDRS` (localhost, plus tailnet/LAN when those are on) reach the private, no-login handler. |
+| TCP 22 | The provider firewall limits it to `ssh_cidrs`. On the host, `--ssh-from any` leaves address filtering to the provider; a specific `--ssh-from` filters there too. sshd is key-only, with no root login and `AllowUsers admin`. |
+
+Nothing else is open: no Tailscale port without Tailscale.
+
+| Control | How |
+|---|---|
+| No trusted headers | On the direct TLS listener, ot reads nothing from the request to decide trust. The peer is the TCP peer, and `Host` must be the public name (421 otherwise). Forwarding and `Tailscale-*` headers are ignored. |
+| Certificates | `autocert` with `HostWhitelist(public name)`: a TLS handshake for any other name fails before Let's Encrypt is contacted, so scanners can't make ot request certificates or burn its rate limits. Keys and certificates are in `/var/lib/ot/acme` (0700, ot). TLS 1.2 minimum. HSTS is on. |
+| Port 80 redirect | ot builds the target from its own public URL plus the request's path and query only. An opaque request target (`GET http:evil.example`) can't become part of the host. |
+| Connection floods | Each internet-facing listener holds at most 256 internet connections, and 32 per IPv4 address or IPv6 /64. Over the limit, a connection is closed at once instead of waiting, so nobody can hold the accept queue. Tailnet, LAN and localhost peers are never counted or refused. Port 80 redirects close their connection. Timeouts: 5 s for headers (TLS handshakes included), 10 s for the body, 60 s idle. |
+| Port 80 and localhost | Port 80 gives the private handler only to trusted peers using the short name. Localhost gets only `/_/healthz`, so a reverse proxy or tunnel that forwarded internet traffic to localhost:80 can't expose the no-login handler. |
+| Firewall | nftables opens 80 and 443 only with `--public-domain`, and the Tailscale rules only with Tailscale. With a public address, ot won't start without the firewall (`Requires=ot-firewall.service`). |
+| Fail-closed setup | OpenTofu refuses a server without Tailscale that has no `ssh_cidrs` or no `public_domain`, and a public domain without IPv4. It parses `ssh_cidrs` (canonical, no wider than /16 or /48, an IPv4 block when the server has IPv4). After every apply, it fails if AWS's stored firewall lets SSH in from the whole internet. `bootstrap.sh` won't open the public address until a sign-in provider is configured, won't run `--no-tailscale` while tailscaled is up (Tailscale SSH bypasses the firewall), and refuses `--ssh-from any` on a Pi. `ot-verify` reads the effective `OT_ALLOW_CIDRS`, fails if tailscaled runs without Tailscale configured, makes a real HTTPS request (DNS, certificate, sign-in redirect), and checks that port 80 only redirects an untrusted peer. |
+
+| New risk | Handling |
+|---|---|
+| The server is directly on the internet: scanners, TLS and HTTP parser bugs, floods | Go's TLS and HTTP stacks, kept current by `make gate`'s govulncheck and redeploys. Connection cap and timeouts. Everything but sign-in needs a session. |
+| SSH reachable from the internet when the provider firewall is the only address filter (`--ssh-from any`) | Chosen so a changed home address doesn't lock you out: `tofu apply` with new `ssh_cidrs` fixes it. sshd is key-only. Use a specific `--ssh-from` if your address is static. |
+| A new Lightsail instance has AWS's default firewall (22 and 80 open) for about a minute | Unchanged from before; nothing listens on 80 yet, and sshd accepts only your key. |
+| No WhoIs and no tailnet: every user is identified by their Google or Slack account | That's the point of this mode. |
+| Certificates depend on DNS pointing at the server | If DNS is wrong, HTTPS fails closed (no certificate); nothing falls back to plain HTTP. While DNS is wrong, anyone probing the name can make ot retry and use up Let's Encrypt's 5 failed validations an hour, which only delays your own certificate. Set DNS first. |
+| On a Pi, a router that rewrites the source address of forwarded connections would make internet clients look like LAN peers on port 80 | Documented: don't combine `--lan-access` with `--public-domain` behind such a router. |
+| ot behind someone else's proxy | Not supported: in direct mode ot must be the one terminating TLS, and it trusts no forwarding headers. |
+
+**Independent review (same day).** A reviewer working from the code found no
+path from the internet to the no-login handler and no open redirect. It
+found:
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| 1 | Medium | One host could hold all 512 connection slots on port 80 or 443. Accept then waited, and the household's tailnet/LAN users queued behind it. File descriptors could also run out before the cap, and accept errors were logged only at debug. | The non-blocking guard above, with per-address limits; trusted peers exempt; caps lowered to 256; port 80 redirects close; accept errors at warn. |
+| 2 | Low–medium | `--ssh-from any` was accepted on a Pi, which has no provider firewall. | Refused on a Pi. |
+| 3 | Low–medium | `ot-verify` read `OT_ALLOW_CIDRS` only from `ot.env`, but `ot.local.env` overrides it. A broad value there would have opened the no-login handler on port 80 to the internet, unnoticed. | Effective value read, plus a live check that port 80 only redirects an untrusted peer. |
+| 4 | Low | `ssh_cidrs` was checked as a string: `1.2.3.4/0`, `0::/0` and host bits got through. | Parsed: canonical form, size limits, and an IPv4 block required with IPv4. A post-apply check covers AWS's undocumented handling of an address family left out. |
+| 5 | Low | `--no-tailscale` on a host that had Tailscale left tailscaled, and so Tailscale SSH, running. | The bootstrap refuses until it's stopped, and `ot-verify` fails while it runs. |
+
+It also found three functional bugs, all fixed:
+
+- the first no-Tailscale bootstrap run (before sign-in exists) failed its
+  own preflight;
+- a LAN or tailnet peer using the public name on port 80 got a 421 instead
+  of a redirect;
+- a trailing dot in the public URL broke certificates.
+
+Taken from its hardening notes:
+
+- localhost now reaches only the health check on port 80;
+- Lightsail's firewall rules no longer wait for the static IP, which
+  shortens AWS's default-firewall window at creation.
+
+
 ## Accepted risks
 
 1. **A household member can change any link on purpose.** That is the

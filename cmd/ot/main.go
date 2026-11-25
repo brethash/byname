@@ -15,15 +15,18 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -31,6 +34,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/time/rate"
 
 	"otterly-go/internal/app"
@@ -161,8 +165,12 @@ func serve(args []string) error {
 	throttled := fs.String("throttled-path", defaultThrottled, `Raspberry Pi firmware get_throttled file ("" disables)`)
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
 	logFormat := fs.String("log-format", "text", "text or json")
-	publicURL := fs.String("public-url", "", "https:// address that Tailscale Funnel publishes (https://NAME.TAILNET.ts.net); empty = tailnet only")
-	publicListen := fs.String("public-listen", "unix:/run/ot/public.sock", "unix socket that Tailscale Serve/Funnel proxies the public address to")
+	publicURL := fs.String("public-url", "", "public https:// address, e.g. https://hg.example.com (served directly) or https://NAME.TAILNET.ts.net (through Tailscale Funnel); empty = no public address")
+	publicListen := fs.String("public-listen", "", `where the public address is served: ":443" to terminate TLS here with a Let's Encrypt certificate, or "unix:/path" for Tailscale Serve/Funnel to proxy to (default: unix:/run/ot/public.sock for a .ts.net address, :443 otherwise)`)
+	acmeDir := fs.String("acme-dir", "/var/lib/ot/acme", "where Let's Encrypt account keys and certificates are kept (direct public address only)")
+	acmeEmail := fs.String("acme-email", "", "optional contact address for Let's Encrypt expiry notices (direct public address only)")
+	maxConns := fs.Int("max-public-conns", 256, "concurrent internet connections per internet-facing listener (tailnet, LAN and localhost peers don't count)")
+	maxPerPeer := fs.Int("max-conns-per-ip", 32, "concurrent internet connections per IPv4 address or IPv6 /64")
 	sessionTTL := fs.Duration("session-ttl", 30*24*time.Hour, "how long a Google or Slack sign-in lasts")
 	googleID := fs.String("google-client-id", "", "Google OAuth client ID (enables Sign in with Google)")
 	googleSecret := fs.String("google-client-secret-file", "", "file holding the Google client secret (default: systemd credential ot.google-client-secret)")
@@ -247,7 +255,7 @@ func serve(args []string) error {
 	if *writesPerMin <= 0 {
 		limit = rate.Inf
 	}
-	handler, err := web.New(web.Config{
+	webCfg := web.Config{
 		Hosts:         hostList,
 		AllowedNets:   nets,
 		WriteRate:     limit,
@@ -260,7 +268,26 @@ func serve(args []string) error {
 		PublicURL:     *publicURL,
 		Providers:     providers,
 		SessionTTL:    *sessionTTL,
-	}, svc, who)
+	}
+	var publicHost string
+	if *publicURL != "" {
+		u, err := url.Parse(*publicURL)
+		if err != nil {
+			return fmt.Errorf("--public-url: %w", err)
+		}
+		publicHost = strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+		if *publicListen == "" {
+			*publicListen = ":443"
+			if strings.HasSuffix(publicHost, ".ts.net") {
+				*publicListen = "unix:/run/ot/public.sock"
+			}
+		}
+		webCfg.PublicBehindTailscale = strings.HasPrefix(*publicListen, "unix:")
+		if !webCfg.PublicBehindTailscale && u.Port() != "" && u.Port() != "443" {
+			return errors.New("--public-url: a directly served address must use the default https port")
+		}
+	}
+	handler, err := web.New(webCfg, svc, who)
 	if err != nil {
 		return err
 	}
@@ -279,15 +306,49 @@ func serve(args []string) error {
 		}
 	}
 	srv := newServer(handler)
-	srv.Addr = *listen
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		return err
+	}
 	var pubSrv *http.Server
 	var pubLn net.Listener
-	if pub := handler.Public(); pub != nil {
-		pubLn, err = listenUnix(*publicListen)
-		if err != nil {
+	pubTLS := false
+	switch pub := handler.Public(); {
+	case pub == nil:
+	case webCfg.PublicBehindTailscale:
+		if pubLn, err = listenUnix(*publicListen); err != nil {
 			return fmt.Errorf("--public-listen: %w", err)
 		}
 		pubSrv = newServer(pub)
+	default:
+		// Serve the public domain directly. Certificates come from Let's
+		// Encrypt, only ever for the public name (HostWhitelist), through the
+		// TLS-ALPN or HTTP challenge. The plain-HTTP listener becomes
+		// internet-facing too: it answers the HTTP challenge and redirects
+		// everyone but the private listener's own peers to https.
+		if err := os.MkdirAll(*acmeDir, 0o700); err != nil {
+			return fmt.Errorf("--acme-dir: %w", err)
+		}
+		m := &autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: autocert.HostWhitelist(publicHost),
+			Cache:      autocert.DirCache(*acmeDir),
+			Email:      *acmeEmail,
+		}
+		tcp, err := net.Listen("tcp", *publicListen)
+		if err != nil {
+			return fmt.Errorf("--public-listen: %w", err)
+		}
+		pubLn = guard(tcp, handler.Trusted, *maxConns, *maxPerPeer, log)
+		pubSrv = newServer(pub)
+		pubSrv.TLSConfig = m.TLSConfig()
+		pubSrv.TLSConfig.MinVersion = tls.VersionTLS12
+		// Internet scanners cause a steady trickle of TLS handshake errors;
+		// keep those out of the journal unless debugging, but not the rest.
+		pubSrv.ErrorLog = stdlog.New(serverLogWriter{log}, "", 0)
+		pubTLS = true
+		srv.Handler = m.HTTPHandler(handler.PrivateOrRedirect())
+		ln = guard(ln, handler.Trusted, *maxConns, *maxPerPeer, log)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -296,8 +357,11 @@ func serve(args []string) error {
 	go func() { svc.Run(ctx); close(bgDone) }()
 
 	errc := make(chan error, 2)
-	go func() { errc <- srv.ListenAndServe() }()
-	if pubSrv != nil {
+	go func() { errc <- srv.Serve(ln) }()
+	switch {
+	case pubTLS:
+		go func() { errc <- pubSrv.ServeTLS(pubLn, "", "") }()
+	case pubSrv != nil:
 		go func() { errc <- pubSrv.Serve(pubLn) }()
 	}
 	var names []string
@@ -306,7 +370,7 @@ func serve(args []string) error {
 	}
 	log.Info("ot serving", "version", version, "listen", *listen, "hosts", hostList,
 		"allow", *allow, "whois", !*noWhois, "db", *dbPath, "snapshots", *snapDir,
-		"public", *publicURL, "sign_in", names)
+		"public", *publicURL, "public_listen", *publicListen, "sign_in", names)
 
 	select {
 	case err := <-errc:

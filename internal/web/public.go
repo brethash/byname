@@ -14,13 +14,17 @@ import (
 	"otterly-go/internal/store"
 )
 
-// The public address.
+// The public address, served one of two ways.
 //
-// Tailscale Funnel publishes https://<name>.<tailnet>.ts.net on the internet
-// and Tailscale Serve answers the same name for tailnet devices. tailscaled
-// terminates TLS and proxies both to ot over a unix socket that only it
-// (root) and ot can open. ot trusts what tailscaled adds to those requests,
-// and only on that socket:
+// Directly (fromDirect): ot terminates TLS for its own domain on :443 with a
+// Let's Encrypt certificate. Nothing in a request is trusted: the peer is the
+// TCP peer, and every request counts as coming from the internet.
+//
+// Behind Tailscale (fromServe): Tailscale Funnel publishes
+// https://<name>.<tailnet>.ts.net on the internet and Tailscale Serve answers
+// the same name for tailnet devices. tailscaled terminates TLS and proxies
+// both to ot over a unix socket that only it (root) and ot can open. ot
+// trusts what tailscaled adds to those requests, and only on that socket:
 //
 //   - X-Forwarded-For is the real client address (tailscaled sets it, never
 //     appends to a client's value);
@@ -86,7 +90,11 @@ func (s *Server) publicRoutes() http.Handler {
 	h = limits(h)
 	h = s.publicGate(h)
 	h = s.logRequests(h)
-	h = s.fromServe(h)
+	if s.cfg.PublicBehindTailscale {
+		h = s.fromServe(h)
+	} else {
+		h = s.fromDirect(h)
+	}
 	h = securityHeaders(h)
 	h = hsts(h)
 	h = s.recoverer(h)
@@ -97,6 +105,60 @@ func hsts(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		next.ServeHTTP(w, r)
+	})
+}
+
+// fromDirect serves the public domain directly: Host must be the public
+// name, the peer is the TCP peer, and every request is from the internet.
+func (s *Server) fromDirect(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.TrimSuffix(normalizeHost(r.Host), ":443") != s.publicHost {
+			http.Error(w, "unknown host", http.StatusMisdirectedRequest)
+			return
+		}
+		r.Host = s.publicHost
+		next.ServeHTTP(w, withVia(r, viaInternet))
+	})
+}
+
+// Trusted reports whether ip is a peer the private listener accepts
+// (tailnet, LAN, localhost). cmd/ot uses it to exempt them from the
+// internet connection limits.
+func (s *Server) Trusted(ip netip.Addr) bool { return s.allowedIP(ip.Unmap()) }
+
+// PrivateOrRedirect is the plain-HTTP handler when ot serves its public
+// domain directly. Peers the private listener accepts (tailnet, LAN) get the
+// private handler, except for requests to the public name; anyone else is
+// sent to the https address. Localhost gets only the health check: anything
+// on this machine that forwarded internet traffic to localhost:80 (a reverse
+// proxy, a tunnel) must not hand the internet the no-login handler. Let's
+// Encrypt's HTTP challenge is answered in front of this (see cmd/ot).
+func (s *Server) PrivateOrRedirect() http.Handler {
+	redirect := limits(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Path and query only, always starting with "/": an opaque request
+		// target ("GET http:evil.example") must not become part of the host.
+		target := r.URL.EscapedPath()
+		if !strings.HasPrefix(target, "/") {
+			target = "/"
+		}
+		if r.URL.RawQuery != "" {
+			target += "?" + r.URL.RawQuery
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Connection", "close") // don't let redirected clients hold connections
+		http.Redirect(w, r, s.publicURL+target, http.StatusMovedPermanently)
+	}))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip, ok := peerIP(r)
+		private := ok && s.allowedIP(ip) && strings.TrimSuffix(normalizeHost(r.Host), ".") != s.publicHost
+		if private && ip.IsLoopback() && r.URL.Path != "/_/healthz" {
+			private = false
+		}
+		if private {
+			s.handler.ServeHTTP(w, r)
+			return
+		}
+		redirect.ServeHTTP(w, r)
 	})
 }
 

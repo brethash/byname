@@ -1,8 +1,8 @@
 #!/usr/sbin/nft -f
 # ot firewall — rendered by bootstrap.sh into /etc/ot/firewall.nft.
-# Input policy DROP; reachable: ot on tailscale0 (and, on a Pi, from the LAN
-# subnet when bootstrap.sh ran with --lan-access) and break-glass OpenSSH
-# (from the LAN on a Pi, over the tailnet on a cloud server).
+# Input policy DROP; reachable: what bootstrap.sh's flags turn on (ot on the
+# tailnet, the LAN, or its public domain; OpenSSH from the LAN, the tailnet or
+# --ssh-from addresses).
 # Output is not filtered.
 #
 # The first two lines make reloading idempotent: create the table if missing,
@@ -25,17 +25,20 @@ table inet ot_filter {
     udp sport 67 udp dport 68 accept
     udp sport 547 udp dport 546 accept
 
-    # Tailscale direct (peer-to-peer WireGuard) path; without it traffic
-    # still flows via DERP relays, just slower. WireGuard never answers a
-    # packet that isn't from a known peer, so this port looks closed.
-    udp dport 41641 accept
+    # With Tailscale: its direct (peer-to-peer WireGuard) path, which never
+    # answers a packet that isn't from a known peer, and ot on the tailnet.
+    @TAILNET_RULES@
 
-    # ot on the tailnet, and optionally (Pi only) on the home LAN.
-    iifname "tailscale0" tcp dport 80 accept
+    # ot on the home LAN (Pi with --lan-access).
     @LAN_HTTP_RULE@
 
-    # Break-glass OpenSSH, key-only: from the home LAN (Pi) or the tailnet
-    # (cloud; normally Tailscale SSH answers there first).
+    # ot's public domain (--public-domain): HTTPS, and HTTP for redirects and
+    # Let's Encrypt's checks.
+    @PUBLIC_RULE@
+
+    # OpenSSH, key-only: from the home LAN (Pi), over the tailnet (cloud with
+    # Tailscale, where Tailscale SSH normally answers first), and from
+    # --ssh-from addresses.
     @SSH_RULE@
   }
 }

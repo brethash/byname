@@ -47,12 +47,19 @@ type Config struct {
 	Version       string
 	Logger        *slog.Logger
 
-	// PublicURL is the https:// address that Tailscale Serve and Funnel
-	// publish for this server (https://ot.<tailnet>.ts.net). Empty disables
-	// the public handler. People reaching it from the internet must sign in
-	// with one of Providers; tailnet devices don't.
-	PublicURL string
-	Providers []*auth.Provider
+	// PublicURL is the server's public https:// address. Empty disables the
+	// public handler. People reaching it from the internet must sign in with
+	// one of Providers.
+	//
+	// With PublicBehindTailscale, the address is the tailnet name
+	// (https://ot.<tailnet>.ts.net) published by Tailscale Funnel, which
+	// proxies to ot over a private socket; ot trusts tailscaled's forwarding
+	// headers there, and tailnet devices skip sign-in. Without it, ot serves
+	// its own domain (https://hg.example.com) with TLS directly: no header is
+	// trusted and every request counts as coming from the internet.
+	PublicURL             string
+	PublicBehindTailscale bool
+	Providers             []*auth.Provider
 	// SessionTTL is how long a sign-in lasts (default 30 days).
 	SessionTTL time.Duration
 }
@@ -80,6 +87,7 @@ type Server struct {
 	publicURL    string // https://host, no trailing slash
 	publicHost   string
 	providers    []*auth.Provider
+	tailnet      bool // the private listener accepts tailnet peers
 	providerByID map[string]*auth.Provider
 	attempts     *auth.Attempts
 	anon         *limiterSet // requests from the internet without a session, per IP or IPv6 /64
@@ -119,6 +127,13 @@ func New(cfg Config, svc *app.Service, who whois.Resolver) (*Server, error) {
 		started: time.Now(),
 	}
 	s.favicon = faviconSVG(s.display)
+	for _, p := range cfg.AllowedNets {
+		for _, t := range tailnetNets {
+			if p.Overlaps(t) {
+				s.tailnet = true
+			}
+		}
+	}
 	for _, h := range cfg.Hosts {
 		s.hosts[normalizeHost(h)] = true
 	}
@@ -151,7 +166,7 @@ func (s *Server) setupPublic() error {
 	u, err := url.Parse(cfg.PublicURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
 		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("public URL %q: want https://<name>.<tailnet>.ts.net", cfg.PublicURL)
+		return fmt.Errorf("public URL %q: want https://host, e.g. https://hg.example.com or https://ot.<tailnet>.ts.net", cfg.PublicURL)
 	}
 	if len(cfg.Providers) == 0 {
 		return errors.New("a public URL needs at least one sign-in provider (Google or Slack)")
@@ -417,6 +432,7 @@ func (s *Server) funcs(host string, internet bool) template.FuncMap {
 		"host":       func() string { return host },
 		"brand":      func() string { return s.display },
 		"internet":   func() bool { return internet },
+		"tailnet":    func() bool { return s.tailnet },
 		"ago":        ago,
 		"when":       func(t time.Time) string { return t.Local().Format("2006-01-02 15:04") },
 		"trunc":      trunc,

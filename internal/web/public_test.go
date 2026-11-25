@@ -75,6 +75,7 @@ func newPublicHarness(t *testing.T, allow ...string) (*harness, *fakeGoogle) {
 	}
 	h := newHarness(t, func(c *Config) {
 		c.PublicURL = publicURL
+		c.PublicBehindTailscale = true
 		c.Providers = []*auth.Provider{g.provider(t, allow...)}
 	})
 	return h, g
@@ -286,6 +287,7 @@ func TestSignInChooser(t *testing.T) {
 	}
 	h := newHarness(t, func(c *Config) {
 		c.PublicURL = publicURL
+		c.PublicBehindTailscale = true
 		c.Providers = []*auth.Provider{g.provider(t, "alice@gmail.com"), slack}
 	})
 	w := h.pub("GET", "/_/signin?next=%2Fwiki", "", funnel("203.0.113.9"))
