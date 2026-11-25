@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"otterly-go/internal/app"
@@ -254,7 +255,24 @@ type healthReport struct {
 	Links         int        `json:"links"`
 	Schema        int        `json:"schema"`
 	Power         *powerInfo `json:"power,omitempty"`
+	DiskFreeMB    *int64     `json:"disk_free_mb,omitempty"`
+	LowDisk       bool       `json:"low_disk,omitempty"`
 	Error         string     `json:"error,omitempty"`
+}
+
+// lowDiskMB is the free-space level below which health reports low_disk.
+const lowDiskMB = 256
+
+func diskFreeMB(dir string) *int64 {
+	if dir == "" {
+		return nil
+	}
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return nil
+	}
+	mb := int64(uint64(st.Bavail) * uint64(st.Bsize) >> 20)
+	return &mb
 }
 
 type powerInfo struct {
@@ -271,7 +289,9 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		Version:       s.cfg.Version,
 		UptimeSeconds: int64(time.Since(s.started).Seconds()),
 		Power:         readThrottled(s.cfg.ThrottledPath),
+		DiskFreeMB:    diskFreeMB(s.cfg.DataDir),
 	}
+	rep.LowDisk = rep.DiskFreeMB != nil && *rep.DiskFreeMB < lowDiskMB
 	ctx := r.Context()
 	status := http.StatusOK
 	var err error

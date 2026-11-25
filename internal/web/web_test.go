@@ -375,7 +375,7 @@ func TestSecurityHeadersEverywhere(t *testing.T) {
 	} {
 		if !strings.Contains(w.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") ||
 			w.Header().Get("X-Content-Type-Options") != "nosniff" ||
-			w.Header().Get("Referrer-Policy") != "no-referrer" {
+			w.Header().Get("Referrer-Policy") != "same-origin" {
 			t.Fatalf("status %d response missing security headers: %v", w.Code, w.Header())
 		}
 	}
@@ -402,6 +402,32 @@ func TestWriteRateLimit(t *testing.T) {
 	// A different device has its own bucket.
 	w := h.do("POST", "/_/links", form("name", "other", "target", "https://x.example"), formBody(), sameOrigin(), peer(bobPeer))
 	expectStatus(t, w, http.StatusSeeOther)
+}
+
+func TestDailyWriteBudget(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.WriteRate = rate.Inf; c.WriteDaily = 2 })
+	codes := []int{}
+	for i := range 3 {
+		w := h.do("POST", "/_/links", form("name", "d"+strconv.Itoa(i), "target", "https://x.example"), formBody(), sameOrigin())
+		codes = append(codes, w.Code)
+	}
+	if codes[0] != http.StatusSeeOther || codes[1] != http.StatusSeeOther || codes[2] != http.StatusTooManyRequests {
+		t.Fatalf("codes = %v", codes)
+	}
+}
+
+func TestShortLimitRefundsDailyBudget(t *testing.T) {
+	ls := newLimiterSet(rate.Every(time.Hour), 1, 2)
+	if !ls.allow("k") { // uses 1 short + 1 daily
+		t.Fatal("first write refused")
+	}
+	if ls.allow("k") { // short bucket empty: refused, daily refunded
+		t.Fatal("second write allowed despite short limit")
+	}
+	e := ls.m["k"]
+	if got := e.day.Tokens(); got < 0.99 {
+		t.Fatalf("daily budget not refunded: %.2f tokens left", got)
+	}
 }
 
 func TestAPI(t *testing.T) {
@@ -479,7 +505,7 @@ func TestHealthAndPower(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "get_throttled")
 	os.WriteFile(path, []byte("10005\n"), 0o644)
-	h := newHarness(t, func(c *Config) { c.ThrottledPath = path })
+	h := newHarness(t, func(c *Config) { c.ThrottledPath = path; c.DataDir = dir })
 	h.create("a", "https://a.example")
 	w := h.do("GET", "/_/healthz", "")
 	expectStatus(t, w, http.StatusOK)
@@ -487,7 +513,7 @@ func TestHealthAndPower(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
 		t.Fatal(err)
 	}
-	if rep.Status != "ok" || rep.Links != 1 || rep.Schema != 1 || rep.Version != "test" {
+	if rep.Status != "ok" || rep.Links != 1 || rep.Schema != 1 || rep.Version != "test" || rep.DiskFreeMB == nil || *rep.DiskFreeMB <= 0 {
 		t.Fatalf("health = %+v", rep)
 	}
 	p := rep.Power

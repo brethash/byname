@@ -31,9 +31,13 @@ type Config struct {
 	Hosts []string
 	// AllowedNets are the peer networks allowed to connect (the tailnet).
 	AllowedNets []netip.Prefix
-	// WriteRate and WriteBurst bound changes per device.
+	// WriteRate and WriteBurst bound changes per device; WriteDaily caps a
+	// device's changes per 24 h (0 = no daily cap).
 	WriteRate  rate.Limit
 	WriteBurst int
+	WriteDaily int
+	// DataDir is where the database lives; health reports its free space.
+	DataDir string
 	// ThrottledPath is the Raspberry Pi firmware's get_throttled file; "" or
 	// missing disables reporting.
 	ThrottledPath string
@@ -86,7 +90,7 @@ func New(cfg Config, svc *app.Service, who whois.Resolver) (*Server, error) {
 		hosts:   make(map[string]bool),
 		display: normalizeHost(cfg.Hosts[0]),
 		pages:   make(map[string]*template.Template),
-		writes:  newLimiterSet(cfg.WriteRate, cfg.WriteBurst),
+		writes:  newLimiterSet(cfg.WriteRate, cfg.WriteBurst, cfg.WriteDaily),
 		started: time.Now(),
 	}
 	for _, h := range cfg.Hosts {

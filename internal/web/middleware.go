@@ -51,7 +51,12 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("Content-Security-Policy", contentSecurityPolicy)
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
-		h.Set("Referrer-Policy", "no-referrer")
+		// same-origin, not no-referrer: under no-referrer, browsers send
+		// "Origin: null" on form POSTs, and over plain HTTP (no
+		// Sec-Fetch-Site) CrossOriginProtection would then reject ot's own
+		// forms. same-origin still sends no Referer to any other site,
+		// including redirect destinations.
+		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		h.Set("Cross-Origin-Resource-Policy", "same-origin")
 		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
@@ -162,44 +167,64 @@ func limits(next http.Handler) http.Handler {
 	})
 }
 
-// limiterSet is a per-actor token bucket for writes.
+// limiterSet holds two token buckets per device: a short-term rate (stops
+// bursts) and a daily budget (bounds how fast a compromised device could grow
+// the append-only audit log and fill the SD card).
 type limiterSet struct {
 	mu    sync.Mutex
-	limit rate.Limit
+	limit rate.Limit // short-term rate; <= 0 disables
 	burst int
+	daily int // changes per device per 24 h; <= 0 disables
 	m     map[string]*limiterEntry
 }
 
 type limiterEntry struct {
-	l    *rate.Limiter
-	seen time.Time
+	short, day *rate.Limiter
+	seen       time.Time
 }
 
-func newLimiterSet(limit rate.Limit, burst int) *limiterSet {
-	return &limiterSet{limit: limit, burst: burst, m: make(map[string]*limiterEntry)}
+func newLimiterSet(limit rate.Limit, burst, daily int) *limiterSet {
+	return &limiterSet{limit: limit, burst: burst, daily: daily, m: make(map[string]*limiterEntry)}
 }
 
 func (ls *limiterSet) allow(key string) bool {
-	if ls.limit <= 0 {
-		return true
-	}
 	now := time.Now()
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 	if len(ls.m) > 1000 {
 		for k, e := range ls.m {
-			if now.Sub(e.seen) > 10*time.Minute {
+			if now.Sub(e.seen) > 24*time.Hour { // a full day idle: both buckets are full again
 				delete(ls.m, k)
 			}
 		}
 	}
 	e, ok := ls.m[key]
 	if !ok {
-		e = &limiterEntry{l: rate.NewLimiter(ls.limit, ls.burst)}
+		e = &limiterEntry{}
+		if ls.limit > 0 {
+			e.short = rate.NewLimiter(ls.limit, ls.burst)
+		}
+		if ls.daily > 0 {
+			e.day = rate.NewLimiter(rate.Limit(float64(ls.daily)/(24*60*60)), ls.daily)
+		}
 		ls.m[key] = e
 	}
 	e.seen = now
-	return e.l.Allow()
+	var dayRes *rate.Reservation
+	if e.day != nil {
+		dayRes = e.day.ReserveN(now, 1)
+		if !dayRes.OK() || dayRes.DelayFrom(now) > 0 {
+			dayRes.CancelAt(now)
+			return false
+		}
+	}
+	if e.short != nil && !e.short.AllowN(now, 1) {
+		if dayRes != nil {
+			dayRes.CancelAt(now) // refund: the change did not happen
+		}
+		return false
+	}
+	return true
 }
 
 type actorKey struct{}

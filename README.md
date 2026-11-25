@@ -65,7 +65,7 @@ Every request passes these checks before any handler runs:
 3. request size limits;
 4. `Origin` must match on every write (Go's `CrossOriginProtection`);
 5. strict CSP and related headers on every response;
-6. a per-device write rate limit.
+6. per-device write limits (a short-term rate and a daily budget).
 
 Destinations must be plain `http(s)` URLs with no embedded credentials,
 backslashes or look-alike Unicode. Template placeholders can never change the
@@ -77,3 +77,6 @@ On the Pi, the service runs under a tight systemd sandbox: read-only system,
 syscall filter, only `CAP_NET_BIND_SERVICE`, and only tailnet peers allowed.
 It sits behind a default-drop firewall. The AWS key exists only in the backup
 unit and can only add objects.
+
+The OWASP review, including what it fixed and the risks accepted, is in
+[docs/security-review.md](docs/security-review.md).

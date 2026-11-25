@@ -80,6 +80,7 @@ if [[ -n "$score" ]] && awk -v s="$score" 'BEGIN{exit !(s <= 2.0)}'; then pass "
 if [[ "$TS_IP" != "?" ]]; then
   health="$(curl -fsS -m 5 -H "Host: $FIRST_HOST" "http://$TS_IP/_/healthz" 2>&1)"
   if grep -q '"status": "ok"' <<<"$health"; then pass "health OK over the tailnet address ($TS_IP)"; else fail "health check failed: $health"; fi
+  if grep -q '"low_disk": true' <<<"$health"; then fail "low disk space for /var/lib/ot: $(grep -o '"disk_free_mb": [0-9]*' <<<"$health")"; fi
   who="$(curl -fsS -m 5 -H "Host: $FIRST_HOST" "http://$TS_IP/_/whoami" 2>&1)"
   if grep -q 'Tailscale user' <<<"$who"; then pass "WhoIs works from the sandboxed service"; else fail "WhoIs not working from the service (see http://$FIRST_HOST/_/whoami)"; fi
   code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H 'Host: evil.example' "http://$TS_IP/")"

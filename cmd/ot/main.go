@@ -152,6 +152,7 @@ func serve(args []string) error {
 	maxLinks := fs.Int("max-links", 10000, "maximum live links (0 = unlimited)")
 	writesPerMin := fs.Float64("write-rate", 30, "changes allowed per device per minute")
 	writeBurst := fs.Int("write-burst", 10, "burst of changes allowed per device")
+	writeDaily := fs.Int("write-daily", 300, "changes allowed per device per 24 hours (0 = unlimited)")
 	throttled := fs.String("throttled-path", defaultThrottled, `Raspberry Pi firmware get_throttled file ("" disables)`)
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
 	logFormat := fs.String("log-format", "text", "text or json")
@@ -209,6 +210,8 @@ func serve(args []string) error {
 		AllowedNets:   nets,
 		WriteRate:     limit,
 		WriteBurst:    *writeBurst,
+		WriteDaily:    *writeDaily,
+		DataDir:       filepath.Dir(*dbPath),
 		ThrottledPath: *throttled,
 		Version:       version,
 		Logger:        log,
