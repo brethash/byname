@@ -87,7 +87,8 @@ runs:
 3. request size limits;
 4. `Origin` must match on every write (Go's `CrossOriginProtection`);
 5. strict CSP and related headers on every response;
-6. per-device write limits (a short-term rate and a daily budget).
+6. write limits per device or signed-in account, a short-term rate and a
+   daily budget; devices without Tailscale share one budget.
 
 Destinations must be plain `http(s)` URLs with no embedded credentials,
 backslashes or look-alike Unicode. Template placeholders can never change the

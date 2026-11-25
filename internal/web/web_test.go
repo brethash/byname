@@ -472,6 +472,32 @@ func TestWriteRateLimit(t *testing.T) {
 	expectStatus(t, w, http.StatusSeeOther)
 }
 
+func TestDevicesWithoutTailscaleShareABudget(t *testing.T) {
+	h := newHarness(t, func(c *Config) {
+		c.WriteRate = rate.Inf
+		c.WriteDaily = 2
+		c.AllowedNets = append(c.AllowedNets, netip.MustParsePrefix("192.168.0.0/16"))
+	})
+	post := func(name, from string) int {
+		return h.do("POST", "/_/links", form("name", name, "target", "https://x.example"),
+			formBody(), sameOrigin(), peer(from)).Code
+	}
+	// A LAN device hopping addresses gets no more than the shared budget...
+	if post("a", "192.168.1.20:5000") != http.StatusSeeOther || post("b", "192.168.7.31:5000") != http.StatusSeeOther {
+		t.Fatal("first two LAN changes refused")
+	}
+	if code := post("c", "192.168.200.9:5000"); code != http.StatusTooManyRequests {
+		t.Fatalf("third LAN change from a new address: %d, want 429", code)
+	}
+	// ...and doesn't touch tailnet devices' budgets.
+	if post("d", alicePeer) != http.StatusSeeOther {
+		t.Fatal("tailnet device refused after LAN budget ran out")
+	}
+	if n := len(h.srv.writes.m); n != 2 {
+		t.Fatalf("%d limiter entries, want 2 (alice's device and the shared LAN key)", n)
+	}
+}
+
 func TestDailyWriteBudget(t *testing.T) {
 	h := newHarness(t, func(c *Config) { c.WriteRate = rate.Inf; c.WriteDaily = 2 })
 	codes := []int{}

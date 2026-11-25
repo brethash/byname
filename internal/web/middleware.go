@@ -194,8 +194,9 @@ func limits(next http.Handler) http.Handler {
 //     makes room, so every address gets a bucket of its own and nobody can
 //     drain a shared one;
 //   - no evict (changes): new keys are refused, so a daily budget can never
-//     be reset by pushing its entry out. Only signed-in accounts, tailnet
-//     devices and LAN addresses have change keys, far fewer than maxKeys.
+//     be reset by pushing its entry out. Change keys are signed-in accounts,
+//     tailnet devices and addresses, and one shared key for everything
+//     without Tailscale (see actor): far fewer than maxKeys.
 type limiterSet struct {
 	mu      sync.Mutex
 	limit   rate.Limit // short-term rate; <= 0 disables
@@ -314,8 +315,12 @@ func (s *Server) identify(r *http.Request) (store.Actor, whois.Identity, error) 
 }
 
 // actor is who r's changes are recorded as, and the key their write budget is
-// counted under: the signed-in account on the public address, otherwise the
-// Tailscale device (or the IP address when WhoIs knows nobody).
+// counted under: the signed-in account on the public address; otherwise the
+// Tailscale device, or its tailnet address when WhoIs knows nobody. Devices
+// without Tailscale (the home LAN, localhost) share one budget: they are known
+// only by address, and a LAN device can take as many addresses as it likes,
+// so per-address budgets would let it fill the limiter's table (which then
+// refuses newcomers) and multiply its daily allowance.
 func (s *Server) actor(r *http.Request) (store.Actor, string) {
 	if sc := sessionOf(r); sc != nil {
 		ip, _ := peerIP(r)
@@ -330,7 +335,10 @@ func (s *Server) actor(r *http.Request) (store.Actor, string) {
 	if a.Node != "" {
 		return a, "node:" + a.Node
 	}
-	return a, "ip:" + a.IP
+	if ip, ok := peerIP(r); ok && onTailnet(ip) {
+		return a, "ip:" + a.IP
+	}
+	return a, "no-tailscale"
 }
 
 // write wraps a mutating handler: it attributes the request to an actor and

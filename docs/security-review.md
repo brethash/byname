@@ -51,6 +51,11 @@ What it costs:
   compromised.
 - **IP-only attribution** for LAN edits. DHCP reservations make those
   addresses meaningful in the history.
+- **One shared change budget** for every device without Tailscale (30 a
+  minute, 300 a day; since 2026-11-25). A LAN device can take any number of
+  addresses, so per-address budgets bounded nothing. One misbehaving LAN
+  device can use up the budget for the others; tailnet devices and
+  signed-in accounts keep their own.
 
 Mitigations worth doing: put IoT devices and guests on an isolated guest
 Wi-Fi/VLAN so they are outside `--lan-subnet`, and check `ot/_/activity` now
@@ -163,7 +168,7 @@ these, all fixed before commit:
 | # | Severity | Finding | Fix |
 |---|---|---|---|
 | 1 | Medium | Two addresses could keep the in-memory list of pending sign-ins (1,000 max, 10 minutes each) full and block every internet sign-in. A hostile page could do the same through its visitors, because `/start` is a GET. | Pending state moved into the AES-GCM-sealed cookie; the server keeps none. |
-| 2 | Medium | The anonymous rate limiter kept an entry per address for 24 hours, with no cap and a full scan on every call. Rotating IPv6 addresses could run ot out of memory, for tailnet users too. | Idle entries dropped after 31 s, IPv6 keyed by /64, and a 10,000-entry cap that evicts the least recently used entry. A first version sent newcomers to a shared overflow bucket once full; an automated review after the commit pointed out that an attacker with a /48 could drain it, so eviction replaced it. The write limiter doesn't evict: with its table full it refuses new keys, so no one can reset a daily budget by pushing it out (only accounts, tailnet devices and LAN addresses have write keys). |
+| 2 | Medium | The anonymous rate limiter kept an entry per address for 24 hours, with no cap and a full scan on every call. Rotating IPv6 addresses could run ot out of memory, for tailnet users too. | Idle entries dropped after 31 s, IPv6 keyed by /64, and a 10,000-entry cap that evicts the least recently used entry. A first version sent newcomers to a shared overflow bucket once full; an automated review after the commit pointed out that an attacker with a /48 could drain it, so eviction replaced it. The write limiter doesn't evict: with its table full it refuses new keys, so no one can reset a daily budget by pushing it out A third automated review then noted that LAN devices were keyed per address, so one LAN device taking many addresses could fill that table and lock out newcomers. Devices without Tailscale now share one change budget (30 a minute, 300 a day), as the first review had recommended. |
 | 3 | Low | A Funnel pointed at port 80 (`tailscale funnel 80`) arrives from localhost, which the private listener trusts, so it would have skipped sign-in. `ot-verify` didn't notice. | The private listener refuses Funnel-marked requests. `ot-verify` audits every Serve/Funnel target. |
 | 4 | Low | A listed non-Gmail address matched any Google account with that address. Google doesn't vouch for those. | Such entries match only accounts in that domain's Workspace (`hd`). |
 | 5 | Low | `IPAddressAllow=any` also lifts systemd's inbound filter, but the docs said the defences were unchanged. | The drop-in requires the firewall; docs corrected. |
