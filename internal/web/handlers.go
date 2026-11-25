@@ -344,9 +344,16 @@ func (s *Server) keyword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
+	if sc := sessionOf(r); sc != nil {
+		a, _ := s.actor(r)
+		x := sc.Session
+		s.render(w, http.StatusOK, "whoami", view{Title: "Who am I", Session: &x,
+			Provider: strings.TrimPrefix(a.Node, "via "), PeerIP: a.IP, Public: true})
+		return
+	}
 	a, id, err := s.identify(r)
 	ip, _ := peerIP(r)
-	v := view{Title: "Who am I", Identity: id, PeerIP: a.IP, OnTailnet: onTailnet(ip)}
+	v := view{Title: "Who am I", Identity: id, PeerIP: a.IP, OnTailnet: onTailnet(ip), Public: public(r)}
 	if err != nil && v.OnTailnet {
 		v.WhoIsErr = err.Error()
 	}

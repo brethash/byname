@@ -15,9 +15,19 @@
   },
 
   "grants": [
-    // Household members (not tagged servers, not shared-in users) may use ot.
-    {"src": ["autogroup:member"], "dst": ["tag:ot"], "ip": ["tcp:80"]},
+    // Household members (not tagged servers, not shared-in users) may use ot:
+    // http://ot/ on port 80, and https://ot.<tailnet>.ts.net on 443 when
+    // the public address is on.
+    {"src": ["autogroup:member"], "dst": ["tag:ot"], "ip": ["tcp:80", "tcp:443"]},
   ],
+
+  // Only for bootstrap.sh --public: uncomment to let the host publish its
+  // https:// name on the internet with Tailscale Funnel, and turn on HTTPS
+  // certificates (admin console → DNS). Leave it commented out for a
+  // tailnet-only ot.
+  // "nodeAttrs": [
+  //   {"target": ["tag:ot"], "attr": ["funnel"]},
+  // ],
 
   "ssh": [
     // Tailscale SSH to the host for you only, with periodic browser re-check.

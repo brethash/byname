@@ -231,7 +231,7 @@ func TestSnapshotAndReopen(t *testing.T) {
 	if _, err := s2.Get(ctx, "keep"); err != nil {
 		t.Fatalf("snapshot missing link: %v", err)
 	}
-	if v, _ := s2.SchemaVersion(ctx); v != 1 {
+	if v, _ := s2.SchemaVersion(ctx); v != 2 {
 		t.Fatalf("schema version = %d", v)
 	}
 }

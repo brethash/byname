@@ -227,6 +227,8 @@ bin/ot export --db /tmp/drill.db | head -40     # links are there
 | Bulk import | `sudo -u ot /usr/local/lib/ot/current/ot import --hosts ot --dry-run file.json` |
 | Change settings | edit `/etc/ot/ot.local.env` (yours; `ot.env` is managed), then `sudo systemctl restart ot` |
 | Turn LAN access on/off | re-run `bootstrap.sh` with or without `--lan-access` |
+| Turn the public address on/off | re-run `bootstrap.sh` with or without `--public` ([public-access.md](public-access.md)) |
+| Who is signed in (public address) | `sudo -u ot /usr/local/lib/ot/current/ot sessions`; `… sessions revoke <email>` signs someone out |
 | Rotate the AWS key | create a new key, replace `/etc/credstore/ot-backup-aws`, delete the old key |
 | Re-check baseline | `sudo ot-verify` |
 
@@ -249,8 +251,10 @@ The host reboots at 04:00 when an update needs it.
 ## Security model in one paragraph
 
 Only tailnet devices, plus home-LAN devices when `--lan-access` is on, can
-reach ot: nftables, systemd `IPAddressAllow` and the app itself each check
-that. Anyone who can reach it may create or edit links; there are no logins.
+reach ot's plain-HTTP address: nftables, systemd `IPAddressAllow` and the app
+itself each check that. (The optional public address is separate: Tailscale
+Funnel delivers it over a private socket, and everyone outside the tailnet
+must sign in with Google or Slack; see [public-access.md](public-access.md).) Anyone who can reach it may create or edit links; there are no logins.
 Each change is recorded in an audit log that the database refuses to rewrite,
 with the person's Tailscale identity, or just the IP address for LAN devices
 without Tailscale. Any earlier version can be restored with one click.

@@ -6,6 +6,7 @@
 //	ot backup    upload the newest snapshot to S3
 //	ot export    print all links as JSON
 //	ot import    load links from an export file
+//	ot sessions  list or revoke sign-ins on the public address
 //	ot version   print the version
 //
 // Every flag can also be set with an OT_* environment variable (for example
@@ -20,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -32,6 +34,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"otterly-go/internal/app"
+	"otterly-go/internal/auth"
 	"otterly-go/internal/backup"
 	"otterly-go/internal/store"
 	"otterly-go/internal/web"
@@ -59,6 +62,7 @@ func main() {
 		"backup":   runBackup,
 		"export":   export,
 		"import":   importLinks,
+		"sessions": sessions,
 		"version":  func([]string) error { fmt.Println(version); return nil },
 	}
 	cmd, ok := cmds[os.Args[1]]
@@ -81,6 +85,7 @@ commands:
   backup    upload the newest snapshot to S3
   export    print all links as JSON
   import    load links from an export file
+  sessions  list or revoke sign-ins on the public address
   version   print the version
 
 Run "ot <command> -h" for flags. Every flag may also be set as OT_<NAME>
@@ -156,6 +161,15 @@ func serve(args []string) error {
 	throttled := fs.String("throttled-path", defaultThrottled, `Raspberry Pi firmware get_throttled file ("" disables)`)
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
 	logFormat := fs.String("log-format", "text", "text or json")
+	publicURL := fs.String("public-url", "", "https:// address that Tailscale Funnel publishes (https://NAME.TAILNET.ts.net); empty = tailnet only")
+	publicListen := fs.String("public-listen", "unix:/run/ot/public.sock", "unix socket that Tailscale Serve/Funnel proxies the public address to")
+	sessionTTL := fs.Duration("session-ttl", 30*24*time.Hour, "how long a Google or Slack sign-in lasts")
+	googleID := fs.String("google-client-id", "", "Google OAuth client ID (enables Sign in with Google)")
+	googleSecret := fs.String("google-client-secret-file", "", "file holding the Google client secret (default: systemd credential ot.google-client-secret)")
+	googleAllow := fs.String("google-allow", "", "comma-separated Google accounts (alice@gmail.com) and Workspace domains (example.com) that may sign in")
+	slackID := fs.String("slack-client-id", "", "Slack app client ID (enables Sign in with Slack)")
+	slackSecret := fs.String("slack-client-secret-file", "", "file holding the Slack client secret (default: systemd credential ot.slack-client-secret)")
+	slackTeams := fs.String("slack-teams", "", "comma-separated Slack workspace IDs (T0123ABCD) whose members may sign in")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -201,6 +215,34 @@ func serve(args []string) error {
 		who = whois.New(*socket)
 	}
 
+	var providers []*auth.Provider
+	if *googleID != "" {
+		secret, err := readSecret(*googleSecret, "ot.google-client-secret")
+		if err != nil {
+			return fmt.Errorf("google: %w", err)
+		}
+		p, err := auth.Google(auth.GoogleConfig{ClientID: *googleID, ClientSecret: secret, Allow: splitList(*googleAllow)})
+		if err != nil {
+			return err
+		}
+		providers = append(providers, p)
+	} else if *googleAllow != "" {
+		return errors.New("--google-allow is set but --google-client-id is not")
+	}
+	if *slackID != "" {
+		secret, err := readSecret(*slackSecret, "ot.slack-client-secret")
+		if err != nil {
+			return fmt.Errorf("slack: %w", err)
+		}
+		p, err := auth.Slack(auth.SlackConfig{ClientID: *slackID, ClientSecret: secret, Teams: splitList(*slackTeams)})
+		if err != nil {
+			return err
+		}
+		providers = append(providers, p)
+	} else if *slackTeams != "" {
+		return errors.New("--slack-teams is set but --slack-client-id is not")
+	}
+
 	limit := rate.Limit(*writesPerMin / 60)
 	if *writesPerMin <= 0 {
 		limit = rate.Inf
@@ -215,20 +257,37 @@ func serve(args []string) error {
 		ThrottledPath: *throttled,
 		Version:       version,
 		Logger:        log,
+		PublicURL:     *publicURL,
+		Providers:     providers,
+		SessionTTL:    *sessionTTL,
 	}, svc, who)
 	if err != nil {
 		return err
 	}
 
-	srv := &http.Server{
-		Addr:              *listen,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    16 << 10,
-		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	newServer := func(h http.Handler) *http.Server {
+		return &http.Server{
+			Handler:           h,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       10 * time.Second,
+			// Covers a sign-in callback, which waits up to 20 s for the
+			// provider's token endpoint.
+			WriteTimeout:   30 * time.Second,
+			IdleTimeout:    60 * time.Second,
+			MaxHeaderBytes: 16 << 10,
+			ErrorLog:       slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+		}
+	}
+	srv := newServer(handler)
+	srv.Addr = *listen
+	var pubSrv *http.Server
+	var pubLn net.Listener
+	if pub := handler.Public(); pub != nil {
+		pubLn, err = listenUnix(*publicListen)
+		if err != nil {
+			return fmt.Errorf("--public-listen: %w", err)
+		}
+		pubSrv = newServer(pub)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -236,10 +295,18 @@ func serve(args []string) error {
 	bgDone := make(chan struct{})
 	go func() { svc.Run(ctx); close(bgDone) }()
 
-	errc := make(chan error, 1)
+	errc := make(chan error, 2)
 	go func() { errc <- srv.ListenAndServe() }()
+	if pubSrv != nil {
+		go func() { errc <- pubSrv.Serve(pubLn) }()
+	}
+	var names []string
+	for _, p := range providers {
+		names = append(names, p.ID())
+	}
 	log.Info("ot serving", "version", version, "listen", *listen, "hosts", hostList,
-		"allow", *allow, "whois", !*noWhois, "db", *dbPath, "snapshots", *snapDir)
+		"allow", *allow, "whois", !*noWhois, "db", *dbPath, "snapshots", *snapDir,
+		"public", *publicURL, "sign_in", names)
 
 	select {
 	case err := <-errc:
@@ -254,7 +321,112 @@ func serve(args []string) error {
 	if err := srv.Shutdown(sctx); err != nil {
 		log.Warn("shutdown", "err", err)
 	}
+	if pubSrv != nil {
+		if err := pubSrv.Shutdown(sctx); err != nil {
+			log.Warn("shutdown public", "err", err)
+		}
+	}
 	<-bgDone // flushes click counts
+	return nil
+}
+
+// listenUnix listens on "unix:/path", owner-only. Only tailscaled (root) and
+// ot itself may connect: the public handler trusts the forwarding headers it
+// receives there. systemd's RuntimeDirectory (mode 0700) guards the directory
+// too.
+func listenUnix(addr string) (net.Listener, error) {
+	path, ok := strings.CutPrefix(addr, "unix:")
+	if !ok || !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("%q: want unix:/absolute/path", addr)
+	}
+	if fi, err := os.Lstat(path); err == nil {
+		if fi.Mode().Type() != os.ModeSocket {
+			return nil, fmt.Errorf("%s exists and is not a socket", path)
+		}
+		os.Remove(path) // left over from a crash
+	}
+	old := syscall.Umask(0o177)
+	ln, err := net.Listen("unix", path)
+	syscall.Umask(old)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		ln.Close()
+		return nil, err
+	}
+	return ln, nil
+}
+
+// readSecret reads a client secret from path, or from the systemd credential
+// named cred when path is empty. Secrets are never taken from flags or the
+// environment, where they would show up in process listings and unit files.
+func readSecret(path, cred string) (string, error) {
+	if path == "" {
+		dir := os.Getenv("CREDENTIALS_DIRECTORY")
+		if dir == "" {
+			return "", fmt.Errorf("no secret: put it in /etc/credstore/%s (or pass a --*-client-secret-file)", cred)
+		}
+		path = filepath.Join(dir, cred)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("client secret: %w", err)
+	}
+	secret := strings.TrimSpace(string(b))
+	if secret == "" {
+		return "", fmt.Errorf("client secret file %s is empty", path)
+	}
+	return secret, nil
+}
+
+func sessions(args []string) error {
+	fs := newFlags("sessions")
+	dbPath := fs.String("db", defaultDB, "SQLite database path")
+	fs.Usage = func() {
+		fmt.Fprint(os.Stderr, `usage: ot sessions [--db PATH]                     list live sign-ins
+       ot sessions [--db PATH] revoke EMAIL         sign EMAIL out everywhere
+       ot sessions [--db PATH] revoke --all         sign everyone out
+`)
+	}
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	ctx := context.Background()
+	switch rest := fs.Args(); {
+	case len(rest) == 0:
+		list, err := st.Sessions(ctx)
+		if err != nil {
+			return err
+		}
+		if len(list) == 0 {
+			fmt.Println("no one is signed in")
+			return nil
+		}
+		for _, x := range list {
+			fmt.Printf("%-32s %-7s %-12s from %-39s since %s, until %s\n", x.Email, x.Provider, x.Org, x.IP,
+				x.Created.Local().Format("2006-01-02 15:04"), x.Expires.Local().Format("2006-01-02"))
+		}
+		return nil
+	case len(rest) == 2 && rest[0] == "revoke":
+		email := strings.ToLower(rest[1])
+		if rest[1] == "--all" {
+			email = ""
+		}
+		n, err := st.RevokeSessions(ctx, email)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("revoked %d session(s)\n", n)
+		return nil
+	}
+	fs.Usage()
+	os.Exit(2)
 	return nil
 }
 

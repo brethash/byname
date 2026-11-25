@@ -8,6 +8,9 @@
 #                [--name ot] [--lan-access --lan-domain lan]
 #   cloud:  sudo deploy/host/bootstrap.sh --admin-user admin [--name ot]
 #
+# Either can add --public: publish the service on the internet through
+# Tailscale Funnel, with Google or Slack sign-in (docs/public-access.md).
+#
 # Safe to re-run: every step checks before it changes anything. On a Pi it
 # never runs `tailscale up` for you (that needs your browser); it prints the
 # command. Cloud servers joined the tailnet on first boot.
@@ -23,12 +26,15 @@ LAN_SUBNET=""
 LAN_ACCESS=0
 LAN_DOMAIN=""
 FORCE_FIREWALL=0
+PUBLIC=0
+PUBLIC_SOCK=/run/ot/public.sock
 REBOOT_NEEDED=0
 
 usage() {
   cat <<'USAGE'
 usage: sudo bootstrap.sh --admin-user USER [--name NAME] [--tag tag:NAME] [--platform pi|cloud]
-                         [--lan-subnet CIDR [--lan-access] [--lan-domain DOMAIN]] [--force-firewall]
+                         [--lan-subnet CIDR [--lan-access] [--lan-domain DOMAIN]] [--public]
+                         [--force-firewall]
 
   --admin-user      the account you log in with (must already have an SSH key)
   --name            the service name people type, e.g. ot for ot/wiki (default: ot).
@@ -36,6 +42,10 @@ usage: sudo bootstrap.sh --admin-user USER [--name NAME] [--tag tag:NAME] [--pla
   --tag             Tailscale tag for this host (default: tag:NAME); your tailnet
                     policy must define it
   --platform        pi or cloud (default: detected; a Raspberry Pi is "pi")
+  --public          also publish NAME on the internet at https://NAME.<tailnet>.ts.net
+                    through Tailscale Funnel. People outside the tailnet must sign in with
+                    Google or Slack; set those up first (docs/public-access.md). Re-run
+                    without it to make NAME tailnet-only again.
 
 Raspberry Pi only:
   --lan-subnet      your home LAN, e.g. 192.168.1.0/24 (break-glass SSH is allowed from here)
@@ -59,6 +69,7 @@ while [[ $# -gt 0 ]]; do
     --lan-access) LAN_ACCESS=1; shift ;;
     --lan-domain) LAN_DOMAIN="${2:?}"; shift 2 ;;
     --force-firewall) FORCE_FIREWALL=1; shift ;;
+    --public) PUBLIC=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -103,6 +114,23 @@ ADMIN_HOME="$(getent passwd "$ADMIN_USER" | cut -d: -f6)"
 [[ "$NAME" != "localhost" ]] || die "--name localhost would shadow this machine's loopback name"
 [[ -n "$TAG" ]] || TAG="tag:$NAME"
 [[ "$TAG" =~ ^tag:[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || die "invalid --tag '$TAG' (want tag:something)"
+if [[ $PUBLIC -eq 1 ]]; then
+  # Sign-in must be configured before the public address opens: ot refuses
+  # to start with a public address and no way to sign in.
+  sysv="$(systemctl --version | awk 'NR==1 {print $2}')"
+  [[ "$sysv" =~ ^[0-9]+$ && "$sysv" -ge 254 ]] || die "--public needs systemd 254 or later (ImportCredential); this is ${sysv:-unknown}"
+  SIGNIN=""
+  for p in google slack; do
+    P="${p^^}"
+    grep -Eq "^OT_${P}_CLIENT_ID=.+" /etc/ot/ot.local.env 2>/dev/null || continue
+    [[ -s "/etc/credstore/ot.$p-client-secret" ]] ||
+      die "OT_${P}_CLIENT_ID is set in /etc/ot/ot.local.env, but /etc/credstore/ot.$p-client-secret is missing or empty"
+    if [[ $p == google ]]; then list=OT_GOOGLE_ALLOW; else list=OT_SLACK_TEAMS; fi
+    grep -Eq "^$list=.+" /etc/ot/ot.local.env || die "OT_${P}_CLIENT_ID is set but $list is empty: say who may sign in"
+    SIGNIN+=" $p"
+  done
+  [[ -n "$SIGNIN" ]] || die "--public needs Google or Slack sign-in in /etc/ot/ot.local.env first (docs/public-access.md)"
+fi
 if [[ "$PLATFORM" == pi ]]; then
   python3 - "$LAN_SUBNET" <<'PY' || die "--lan-subnet must be an IPv4 network like 192.168.1.0/24"
 import ipaddress, sys
@@ -321,9 +349,22 @@ if [[ $LAN_ACCESS -eq 1 ]]; then
 fi
 ALLOW="100.64.0.0/10,fd7a:115c:a1e0::/48,127.0.0.1/32,::1/128"
 [[ $LAN_ACCESS -eq 1 ]] && ALLOW+=",$LAN_SUBNET"
+PUBLIC_URL=""
+if [[ $PUBLIC -eq 1 ]]; then
+  [[ -n "$TS_SUFFIX" ]] || die "--public: join the tailnet first (tailscale up), then re-run"
+  ts_ver="$(tailscale version 2>/dev/null | head -1)"
+  python3 -c 'import sys; v = tuple(int(x) for x in sys.argv[1].split("-")[0].split(".")[:2]); sys.exit(v < (1, 98))' "$ts_ver" 2>/dev/null ||
+    die "--public needs Tailscale 1.98 or later (Funnel to a unix socket); this is ${ts_ver:-unknown}: apt-get install tailscale"
+  DNS_NAME="$(tailscale status --json --peers=false 2>/dev/null | python3 -c 'import json, sys
+print(((json.load(sys.stdin).get("Self") or {}).get("DNSName") or "").rstrip(".").lower())')"
+  [[ "$DNS_NAME" == "$NAME.$TS_SUFFIX" ]] ||
+    die "this machine's tailnet name is '$DNS_NAME', not $NAME.$TS_SUFFIX (is another device named $NAME?)"
+  PUBLIC_URL="https://$DNS_NAME"
+fi
 # ot.env is fully managed (rewritten on every run); local overrides go in
 # ot.local.env, which ot.service reads afterwards.
-sed -e "s|@OT_HOSTS@|$HOSTS|" -e "s|@OT_ALLOW_CIDRS@|$ALLOW|" "$DEPLOY_DIR/host/ot.env.in" > /etc/ot/ot.env
+sed -e "s|@OT_HOSTS@|$HOSTS|" -e "s|@OT_ALLOW_CIDRS@|$ALLOW|" -e "s|@OT_PUBLIC_URL@|$PUBLIC_URL|" \
+  "$DEPLOY_DIR/host/ot.env.in" > /etc/ot/ot.env
 chmod 0644 /etc/ot/ot.env
 [[ -f /etc/ot/ot.local.env ]] || printf '# Local overrides for /etc/ot/ot.env (same OT_* variables). Kept across bootstrap runs.\n' > /etc/ot/ot.local.env
 # What this host is, for ot-verify. Not read by ot itself.
@@ -337,6 +378,7 @@ EOF
 chmod 0644 /etc/ot/host.conf
 ok "wrote /etc/ot/ot.env (OT_HOSTS=$HOSTS)"
 ok "allowed peers: $ALLOW"
+[[ -n "$PUBLIC_URL" ]] && ok "public address $PUBLIC_URL, sign-in with:$SIGNIN"
 [[ -n "$TS_SUFFIX" ]] || warn "tailnet not joined yet; re-run this script after 'tailscale up' to add the full tailnet name to OT_HOSTS"
 # systemd's IP filter for ot.service only allows the tailnet and localhost;
 # LAN access adds the LAN subnet in a drop-in.
@@ -347,6 +389,32 @@ if [[ $LAN_ACCESS -eq 1 ]]; then
   ok "ot.service accepts $LAN_SUBNET (drop-in 10-lan-access.conf)"
 else
   rm -f /etc/systemd/system/ot.service.d/10-lan-access.conf
+fi
+if [[ $PUBLIC -eq 1 ]]; then
+  cat > /etc/systemd/system/ot.service.d/20-public.conf <<EOF
+# Managed by ot bootstrap.sh --public
+[Unit]
+# IPAddressAllow=any below also lifts systemd's inbound filter on port 80, so
+# don't run without the firewall.
+Requires=ot-firewall.service
+
+[Service]
+# Tailscale Serve/Funnel proxies the public address to $PUBLIC_SOCK. The
+# directory is 0700, so only ot and root (tailscaled) can reach the socket;
+# ot trusts tailscaled's forwarding headers there.
+RuntimeDirectory=ot
+RuntimeDirectoryMode=0700
+# Google and Slack client secrets: /etc/credstore/ot.google-client-secret,
+# /etc/credstore/ot.slack-client-secret.
+ImportCredential=ot.*
+# Sign-in calls Google's and Slack's token endpoints over HTTPS, so ot needs
+# outbound internet access. Inbound is still limited by the firewall and by
+# ot's own peer-address check (the unit requires the firewall).
+IPAddressAllow=any
+EOF
+  ok "ot.service: public socket, credentials, outbound HTTPS (drop-in 20-public.conf)"
+else
+  rm -f /etc/systemd/system/ot.service.d/20-public.conf
 fi
 install -m 0644 "$DEPLOY_DIR/host/ot-backup.env.example" /etc/ot/ot-backup.env.example
 
@@ -426,6 +494,23 @@ else
 fi
 ok "installed ot-verify and ot-restore to /usr/local/sbin"
 
+# ---------------------------------------------------------------- public
+if [[ $PUBLIC -eq 1 ]]; then
+  step "Public address (Tailscale Funnel)"
+  # Funnel to ot's socket; also answers tailnet devices on https://. The
+  # timeout stops a first-time consent prompt from hanging this script.
+  if ! out="$(timeout 60 tailscale funnel --bg --yes --https=443 "unix:$PUBLIC_SOCK" 2>&1)"; then
+    printf '%s\n' "$out" | sed 's/^/    /'
+    die "tailscale funnel failed: turn on HTTPS certificates (admin console → DNS) and give $TAG the funnel attribute in your tailnet policy (deploy/tailscale/policy.hujson), then re-run"
+  fi
+  ok "$PUBLIC_URL is on the internet (Funnel → $PUBLIC_SOCK); outside the tailnet it asks for sign-in"
+elif tailscale funnel status 2>/dev/null | grep -qF "$PUBLIC_SOCK"; then
+  step "Public address"
+  tailscale funnel --https=443 off >/dev/null 2>&1 || true
+  tailscale serve --https=443 off >/dev/null 2>&1 || true
+  ok "Funnel off: $NAME is tailnet-only again"
+fi
+
 # ---------------------------------------------------------------- summary
 step "Next steps"
 if ! tailscale status >/dev/null 2>&1; then
@@ -442,3 +527,6 @@ fi
 [[ $REBOOT_NEEDED -eq 1 ]] && echo "    * Reboot to apply config.txt changes: sudo reboot"
 echo "    * Deploy from your Mac:  make deploy TARGET=$ADMIN_USER@$NAME"
 echo "    * Then check everything: sudo ot-verify"
+if [[ $PUBLIC -eq 1 ]]; then
+  echo "    * From a phone with Wi-Fi and Tailscale off, open $PUBLIC_URL/_/whoami: it should ask you to sign in"
+fi

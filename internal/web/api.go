@@ -32,10 +32,19 @@ type apiLink struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-func (s *Server) toAPI(l store.Link) apiLink {
+// baseURL is the address people use on r's path: the public https:// address
+// through Tailscale Serve or Funnel, http://<name> otherwise.
+func (s *Server) baseURL(r *http.Request) string {
+	if public(r) {
+		return s.publicURL
+	}
+	return "http://" + s.display
+}
+
+func (s *Server) toAPI(r *http.Request, l store.Link) apiLink {
 	return apiLink{
 		Name: l.Name, Target: l.Target, Description: l.Description,
-		URL: "http://" + s.display + "/" + l.Name,
+		URL: s.baseURL(r) + "/" + l.Name,
 		Rev: l.Rev, Clicks: l.Clicks,
 		CreatedBy: l.CreatedBy, CreatedAt: l.CreatedAt.UTC(),
 		UpdatedBy: l.UpdatedBy, UpdatedAt: l.UpdatedAt.UTC(),
@@ -122,7 +131,7 @@ func (s *Server) apiList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]apiLink, 0, len(links))
 	for _, l := range links {
-		out = append(out, s.toAPI(l))
+		out = append(out, s.toAPI(r, l))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -143,7 +152,7 @@ func (s *Server) apiLookup(w http.ResponseWriter, r *http.Request) (store.Link, 
 
 func (s *Server) apiGet(w http.ResponseWriter, r *http.Request) {
 	if l, ok := s.apiLookup(w, r); ok {
-		writeJSON(w, http.StatusOK, s.toAPI(l))
+		writeJSON(w, http.StatusOK, s.toAPI(r, l))
 	}
 }
 
@@ -160,7 +169,7 @@ func (s *Server) apiCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Location", "/_/api/links/"+l.Name)
-	writeJSON(w, http.StatusCreated, s.toAPI(l))
+	writeJSON(w, http.StatusCreated, s.toAPI(r, l))
 }
 
 func (s *Server) apiUpdate(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +194,7 @@ func (s *Server) apiUpdate(w http.ResponseWriter, r *http.Request) {
 		s.apiFail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.toAPI(updated))
+	writeJSON(w, http.StatusOK, s.toAPI(r, updated))
 }
 
 func (s *Server) apiDelete(w http.ResponseWriter, r *http.Request) {
@@ -344,7 +353,7 @@ type openSearchDesc struct {
 	} `xml:"Url"`
 }
 
-func (s *Server) openSearch(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) openSearch(w http.ResponseWriter, r *http.Request) {
 	d := openSearchDesc{
 		NS:            "http://a9.com/-/spec/opensearch/1.1/",
 		ShortName:     s.display + "/",
@@ -352,7 +361,7 @@ func (s *Server) openSearch(w http.ResponseWriter, _ *http.Request) {
 		InputEncoding: "UTF-8",
 	}
 	d.URL.Type, d.URL.Method = "text/html", "get"
-	d.URL.Template = "http://" + s.display + "/_/go?q={searchTerms}"
+	d.URL.Template = s.baseURL(r) + "/_/go?q={searchTerms}"
 	w.Header().Set("Content-Type", "application/opensearchdescription+xml")
 	w.Write([]byte(xml.Header))
 	xml.NewEncoder(w).Encode(d)

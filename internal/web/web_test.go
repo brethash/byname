@@ -581,7 +581,7 @@ func TestHealthAndPower(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
 		t.Fatal(err)
 	}
-	if rep.Status != "ok" || rep.Links != 1 || rep.Schema != 1 || rep.Version != "test" || rep.DiskFreeMB == nil || *rep.DiskFreeMB <= 0 {
+	if rep.Status != "ok" || rep.Links != 1 || rep.Schema != 2 || rep.Version != "test" || rep.DiskFreeMB == nil || *rep.DiskFreeMB <= 0 {
 		t.Fatalf("health = %+v", rep)
 	}
 	p := rep.Power

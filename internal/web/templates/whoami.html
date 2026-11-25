@@ -1,6 +1,14 @@
 {{define "content"}}
 <section class="card">
   <h1>Who am I?</h1>
+  {{if .Session}}
+  <dl>
+    <dt>Signed in with {{.Provider}}</dt><dd>{{.Session.Email}}{{with .Session.Name}} ({{.}}){{end}}</dd>
+    <dt>Your address</dt><dd><code>{{.PeerIP}}</code></dd>
+    <dt>Signed in</dt><dd>{{when .Session.Created}}, until {{when .Session.Expires}}</dd>
+  </dl>
+  <form method="post" action="/_/signout"><button class="btn" type="submit">Sign out</button></form>
+  {{else}}
   <dl>
     <dt>Your address</dt><dd><code>{{.PeerIP}}</code> <span class="muted small">{{if .OnTailnet}}via Tailscale{{else}}home network (no Tailscale){{end}}</span></dd>
     {{if not .OnTailnet}}
@@ -12,6 +20,7 @@
     <dt>Tailscale identity</dt><dd>Unknown, so changes you make are recorded with your address only.{{with .WhoIsErr}}<div class="muted small">{{.}}</div>{{end}}</dd>
     {{end}}
   </dl>
+  {{end}}
   <p class="muted">Every change on {{host}}/ is recorded with this identity.</p>
 </section>
 {{end}}

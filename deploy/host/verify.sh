@@ -122,6 +122,83 @@ if [[ "$TS_IP" != "?" ]]; then
   [[ "$code" == "421" ]] && pass "foreign Host header refused (421)" || fail "foreign Host header got $code, want 421"
 fi
 
+# Public address (Tailscale Funnel). ot.local.env overrides ot.env.
+PUBLIC_URL="$(sed -n 's/^OT_PUBLIC_URL=//p' /etc/ot/ot.env /etc/ot/ot.local.env 2>/dev/null | tail -1)"
+SOCK="$(sed -n 's/^OT_PUBLIC_LISTEN=unix://p' /etc/ot/ot.env /etc/ot/ot.local.env 2>/dev/null | tail -1)"
+SOCK="${SOCK:-/run/ot/public.sock}"
+# Everything Tailscale Serve/Funnel publishes on this host. Anything other
+# than ot's socket would skip ot's sign-in.
+serve_check="$(tailscale serve status --json 2>/dev/null | python3 -c '
+import json, sys
+sock = "unix:" + sys.argv[1]
+try:
+    d = json.loads(sys.stdin.read() or "{}") or {}
+except ValueError:
+    d = {}
+funnel = any((d.get("AllowFunnel") or {}).values())
+targets, others = 0, []
+for hp, web in (d.get("Web") or {}).items():
+    for path, h in ((web or {}).get("Handlers") or {}).items():
+        t = h.get("Proxy") or h.get("Path") or ("text" if h.get("Text") else "?")
+        if t == sock:
+            targets += 1
+        else:
+            others.append(hp + path + " -> " + t)
+for port, h in (d.get("TCP") or {}).items():
+    if (h or {}).get("TCPForward"):
+        others.append("tcp " + port + " -> " + h["TCPForward"])
+print(int(funnel))
+print(targets)
+print("; ".join(others))
+' "$SOCK")"
+mapfile -t serve <<<"$serve_check"
+if [[ -z "$PUBLIC_URL" && "${serve[0]:-0}" == 1 ]]; then
+  section "Public address"
+  fail "Tailscale Funnel is on, but ot's public address is off: whatever it publishes skips sign-in (tailscale funnel status; turn it off with: tailscale funnel reset)"
+fi
+if [[ -n "$PUBLIC_URL" ]]; then
+  section "Public address ($PUBLIC_URL)"
+  PUBLIC_HOST="${PUBLIC_URL#https://}"
+  [[ -f /etc/systemd/system/ot.service.d/20-public.conf ]] && pass "drop-in 20-public.conf present" || fail "20-public.conf missing (re-run bootstrap.sh --public)"
+  if [[ "${serve[0]:-0}" == 1 && "${serve[1]:-0}" -gt 0 ]]; then pass "Tailscale Funnel → $SOCK"; else fail "Funnel isn't publishing $SOCK (tailscale funnel status; re-run bootstrap.sh --public)"; fi
+  [[ -z "${serve[2]:-}" ]] && pass "nothing else published by Serve/Funnel" || fail "Serve/Funnel also publishes: ${serve[2]} (these skip sign-in; remove them)"
+  systemctl show ot.service -p Requires --value | grep -qw ot-firewall.service && pass "ot.service requires the firewall" || fail "ot.service doesn't require ot-firewall.service (re-run bootstrap.sh --public)"
+  perm="$(stat -c '%a %U' "$(dirname "$SOCK")" 2>/dev/null)"
+  [[ "$perm" == "700 ot" ]] && pass "$(dirname "$SOCK") is 0700, owner ot" || fail "$(dirname "$SOCK") is '${perm:-missing}', want '700 ot'"
+  perm="$(stat -c '%a %U' "$SOCK" 2>/dev/null)"
+  [[ "$perm" == "600 ot" ]] && pass "socket is 0600, owner ot" || fail "$SOCK is '${perm:-missing}', want '600 ot'"
+  providers=0
+  for p in google slack; do
+    P="${p^^}"
+    grep -Eq "^OT_${P}_CLIENT_ID=.+" /etc/ot/ot.local.env 2>/dev/null || continue
+    providers=$((providers + 1))
+    secret="/etc/credstore/ot.$p-client-secret"
+    perm="$(stat -c '%a %U' "$secret" 2>/dev/null)"
+    [[ "$perm" == "600 root" || "$perm" == "400 root" ]] && pass "$p client secret ($secret, $perm)" || fail "$secret is '${perm:-missing}', want 0600 root"
+    if [[ $p == google ]]; then endpoint=https://oauth2.googleapis.com/token; else endpoint=https://slack.com/api/openid.connect.token; fi
+    code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' -X POST "$endpoint")"
+    if [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
+      pass "$p token endpoint reachable (HTTP $code)"
+    elif [[ $p == slack ]] && ! ip -4 route show default | grep -q .; then
+      fail "slack.com has no IPv6 address and this server has no IPv4 route: Sign in with Slack can't work (set ipv4 = true in deploy/cloud)"
+    else
+      fail "$p token endpoint unreachable from this host ($endpoint)"
+    fi
+  done
+  [[ $providers -gt 0 ]] && pass "$providers sign-in provider(s) configured" || fail "no sign-in provider in /etc/ot/ot.local.env (ot won't start)"
+  # ot's own gate, through the socket, with the headers tailscaled would add.
+  hdr=(-H "X-Forwarded-Host: $PUBLIC_HOST" -H 'X-Forwarded-Proto: https')
+  out="$(curl -s -o /dev/null -m 5 -w '%{http_code} %{redirect_url}' --unix-socket "$SOCK" "${hdr[@]}" \
+    -H 'X-Forwarded-For: 192.0.2.1' -H 'Tailscale-Funnel-Request: ?1' http://localhost/_/links)"
+  [[ "$out" == 303* && "$out" == *"/_/signin?next="* ]] && pass "internet request without sign-in → sign-in page" || fail "internet request without sign-in got '$out', want 303 to /_/signin"
+  if [[ "$TS_IP" != "?" ]]; then
+    code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' --unix-socket "$SOCK" "${hdr[@]}" -H "X-Forwarded-For: $TS_IP" http://localhost/_/healthz)"
+    [[ "$code" == 200 ]] && pass "tailnet request through Serve skips sign-in" || fail "tailnet request through Serve got $code, want 200"
+  fi
+  code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' --unix-socket "$SOCK" -H 'X-Forwarded-Host: evil.example' http://localhost/)"
+  [[ "$code" == 421 ]] && pass "foreign forwarded host refused (421)" || fail "foreign forwarded host got $code, want 421"
+fi
+
 section "Backups"
 if systemctl is-enabled --quiet ot-backup.timer 2>/dev/null; then
   pass "ot-backup.timer enabled"
@@ -138,6 +215,12 @@ cat <<EOF
   * From each household device (Tailscale on): open  http://$FIRST_HOST/_/whoami
     and type  $FIRST_HOST/test  in the address bar. Record results in docs/client-setup.md.
 EOF
+if [[ -n "$PUBLIC_URL" ]]; then
+  cat <<EOF
+  * Public address: on a phone with Wi-Fi AND Tailscale off, open  $PUBLIC_URL/_/whoami
+    It must ask you to sign in, and refuse an account that isn't on the allow list.
+EOF
+fi
 if [[ "$PLATFORM" == cloud ]]; then
   pub6="$(ip -6 -o addr show scope global | awk '$2 != "tailscale0" {print $4}' | cut -d/ -f1 | head -1)"
   pub4="$(ip -4 -o addr show scope global | awk '$2 != "tailscale0" {print $4}' | cut -d/ -f1 | head -1)"

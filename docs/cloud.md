@@ -12,6 +12,10 @@ Compared with the Pi:
   longer takes the links down for family members who are away.
 - **A monthly bill**, a few dollars (below).
 
+Either host can also be published on the internet with Google or Slack
+sign-in ([public-access.md](public-access.md)). Sign in with Slack needs IPv4
+(`slack.com` has no IPv6 address), so set `ipv4 = true` for it.
+
 `ot` is the default service name everywhere below. If you set another `name`,
 use it wherever these docs say `ot` in a hostname, URL or tag.
 
@@ -140,6 +144,10 @@ Both stacks default to no public IPv4 address. That saves $1.50/month on
 Lightsail and Hetzner's IPv4 fee, and leaves no IPv4 address to scan.
 Everything the server talks to works over IPv6: Tailscale's coordination and
 relay servers, the Debian and Tailscale package mirrors, and S3.
+
+One exception: Sign in with Slack ([public-access.md](public-access.md))
+needs IPv4, because `slack.com` has no IPv6 address (checked 2026-11-25).
+Google sign-in works over IPv6.
 
 Devices on IPv4-only networks still connect, through a Tailscale relay
 (DERP) instead of directly. `tailscale ping ot` shows `via DERP(...)` for a

@@ -103,6 +103,102 @@ to be a DNS label starting with a letter. It becomes the first `OT_HOSTS`
 entry, so the Host allowlist works as before. The generated favicon escapes
 it. No new risk.
 
+## Public address with sign-in (2026-11-25)
+
+Optional ([public-access.md](public-access.md)). Tailscale Funnel publishes
+`https://<name>.<tailnet>.ts.net` on the internet. Devices on the tailnet or
+the home LAN still skip sign-in. Everyone else must sign in with Google or
+Slack, and only accounts on the allow list get in.
+
+**Exposure.** Still no public port on the host. Funnel traffic comes in over
+the tailnet: Tailscale's ingress relays, then WireGuard to the host. The
+host's tailscaled terminates TLS and proxies to ot over
+`/run/ot/public.sock`. That directory is 0700 and the socket 0600, both owned by ot, so only
+root (tailscaled) and ot can connect. Anyone on the internet can now reach
+the sign-in page, the static assets and the favicon. Everything else needs
+a session.
+
+**Trust boundary.** On that socket only, ot reads three headers that
+tailscaled sets: `X-Forwarded-For` (the real client address; tailscaled
+overwrites it rather than appending), `X-Forwarded-Host`, and
+`Tailscale-Funnel-Request`, which marks internet requests (tailscaled deletes
+any copy a client sends, including underscore variants). This was checked in
+Tailscale's source, v1.104 `ipn/ipnlocal/serve.go`. A request counts as
+coming from the tailnet only when it has no Funnel marker **and** its
+forwarded address is a tailnet address. A missing or unparsable address
+counts as the internet. On the plain-HTTP listener these headers are
+ignored.
+
+| Control | How |
+|---|---|
+| Sign-in | OpenID Connect authorization-code flow as a confidential client. Google uses PKCE (S256). Slack doesn't advertise PKCE, so state, nonce and the client secret protect its flow. |
+| ID tokens | Taken straight from the token endpoint over TLS, in a request authenticated with the client secret. The signature isn't checked, which OIDC Core §3.1.3.7(6) allows for tokens received this way. ot checks issuer, audience (and `azp` when there are several audiences), expiry and issue time with 2 minutes of skew, and the nonce (constant-time). It accepts only a verified email address. |
+| Who gets in | Google: listed addresses, or Workspace domains matched on the `hd` claim, never on the address suffix. A listed address counts only where Google vouches for it: Gmail, or an account in that address's Workspace domain. Slack: workspace IDs. Checked at sign-in and again on every request, so removing someone signs them out. |
+| Login CSRF | `state`, nonce, PKCE verifier, destination and expiry (10 minutes) are sealed with AES-256-GCM, using a key made at startup, into a `__Host-ot_signin` cookie. The server keeps nothing per sign-in. The callback's `state` must match the browser's own cookie (constant time). A mismatched callback is refused and leaves that cookie alone, so it can't cancel a real sign-in. The cookie is cleared once used, and the provider refuses a replayed code. |
+| Sessions | A 256-bit random token in a `__Host-ot_session` cookie: Secure, HttpOnly, SameSite=Lax, 30 days. The database stores only its SHA-256, so snapshots and backups can't be used to sign in. Sign-out deletes the row. A new sign-in replaces any old session. Each account keeps at most 10 sessions; older ones are dropped. `ot sessions revoke` ends sessions from the host. |
+| Open redirects | After sign-in ot returns only to a local path. `//host`, `/\host`, control characters and the sign-in pages are refused. |
+| CSRF on writes | Unchanged `CrossOriginProtection`. Over HTTPS browsers send `Sec-Fetch-Site`. `Host` is reset to the public name before the check. |
+| Abuse | Requests from the internet without a session are limited per address, or per /64 for IPv6 (60 a minute, bursts of 30). The limiter's memory is bounded: idle entries are dropped after 31 seconds, sweeps run at most every 10 seconds, and past 10,000 addresses newcomers share one bucket. Sign-ins in progress cost the server nothing. Signed-in users get the per-account write limits. |
+| Mistaken Funnel | The plain-HTTP listener refuses requests carrying Tailscale's Funnel marker, so `tailscale funnel 80` can't publish ot without sign-in. `ot-verify` fails on any Serve/Funnel target other than ot's socket, and on any Funnel while the public address is off. |
+| Secrets | Client secrets come from systemd credentials (`/etc/credstore`, root 0600, `ImportCredential=ot.*`), never from flags or the environment. They are sent only to the provider's token endpoint, never put in a browser URL. |
+| Logging | Every sign-in, refusal, failure and sign-out is logged with provider, account and address. Tokens and codes are never logged. |
+| Transport | HSTS on the public name. TLS is Tailscale's, with a Let's Encrypt certificate. |
+
+| New risk | Handling |
+|---|---|
+| ot needs outbound internet for the token exchange, so the drop-in sets `IPAddressAllow=any`, which also lifts systemd's inbound filter on port 80 | Two of the three layers remain: nftables and ot's own peer check. The drop-in makes ot require `ot-firewall.service`, so it doesn't run without the firewall. Funnel traffic arrives on the socket, outside IP filtering. Possible later: an nftables output rule that limits ot's own outbound connections to tcp/443. |
+| Suspending someone at Google or Slack doesn't end their ot session (up to 30 days) | Documented. Remove them from the allow list or run `ot sessions revoke`. |
+| Allowing a Slack workspace admits its guests | Documented. |
+| A flood of made-up session cookies costs one SQLite primary-key lookup each before the rate limiter answers | Accepted: microseconds per request, and Funnel's own limits apply. |
+| A stolen session cookie or a taken-over Google/Slack account gives the same access as a household member | It's attributed in the history, and `ot sessions revoke` and the allow list cut it off. Use MFA on those accounts. |
+| The tailnet name appears in Certificate Transparency logs and public DNS | Accepted: Funnel needs a public name. |
+| Slack can't be used on IPv6-only servers (`slack.com` has no AAAA record) | Documented. `ot-verify` fails with the reason. |
+| Sessions live in the same SQLite file as the links | Only hashes are stored. They are restored along with the links. |
+
+**Independent review (same day).** A second reviewer, working only from the
+code and the owasp-security checklist, found no way to bypass authentication
+and confirmed the unsigned-ID-token reasoning for both providers. It found
+these, all fixed before commit:
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| 1 | Medium | Two addresses could keep the in-memory list of pending sign-ins (1,000 max, 10 minutes each) full and block every internet sign-in. A hostile page could do the same through its visitors, because `/start` is a GET. | Pending state moved into the AES-GCM-sealed cookie; the server keeps none. |
+| 2 | Medium | The anonymous rate limiter kept an entry per address for 24 hours, with no cap and a full scan on every call. Rotating IPv6 addresses could run ot out of memory, for tailnet users too. | Idle entries dropped after 31 s, sweeps at most every 10 s, a 10,000-entry cap with a shared overflow bucket, IPv6 keyed by /64. |
+| 3 | Low | A Funnel pointed at port 80 (`tailscale funnel 80`) arrives from localhost, which the private listener trusts, so it would have skipped sign-in. `ot-verify` didn't notice. | The private listener refuses Funnel-marked requests. `ot-verify` audits every Serve/Funnel target. |
+| 4 | Low | A listed non-Gmail address matched any Google account with that address. Google doesn't vouch for those. | Such entries match only accounts in that domain's Workspace (`hd`). |
+| 5 | Low | `IPAddressAllow=any` also lifts systemd's inbound filter, but the docs said the defences were unchanged. | The drop-in requires the firewall; docs corrected. |
+| 6 | Low | One allowed account could fill the 10,000-row session table. | At most 10 sessions per account. |
+
+Also taken from its hardening notes:
+
+- An unclassified request now counts as the internet (the zero value), not
+  as trusted.
+- The tailnet path through Serve honours `--allow-cidrs`.
+- The test hooks require an https token endpoint.
+- The sample policy ships with Funnel commented out.
+- The docs cover Slack guests, and note that suspending someone at the
+  provider doesn't end their session.
+
+**Verified:**
+
+- Unit tests cover the provider exchange, every ID-token rejection, the allow
+  lists (including the Gmail/Workspace rule) and the sealed sign-in cookie
+  (wrong state, tampered, expired, another process's key).
+- HTTP tests cover the full sign-in flow against a fake token endpoint:
+  tailnet passthrough, internet gating of every route class, a forged or
+  missing forwarding header, a foreign forwarded host, state/cookie mismatch
+  and replay, refusal of someone not on the list, cancellation, sign-out,
+  removal from the allow list, Workspace-domain matching, rate limiting,
+  limiter memory bounds, IPv6 /64 keys, the per-account session cap,
+  `safeNext`, that the private listener ignores forwarding headers, and that
+  it refuses Funnel traffic.
+- Smoke test of the real binary on a unix socket (0600).
+- `make gate` passes.
+
+**Not verified yet:** a real Funnel, real Google and Slack apps, and a phone
+on cellular. `ot-verify` and the phone check in public-access.md cover these
+on the host.
+
 ## Accepted risks
 
 1. **A household member can change any link on purpose.** That is the

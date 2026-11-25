@@ -103,6 +103,21 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 	})
 }
 
+// notFunnel marks requests as arriving on the private listener, and refuses
+// any that Tailscale Funnel delivered. tailscaled always adds
+// Tailscale-Funnel-Request to Funnel traffic (and strips it from clients), so
+// a Funnel pointed at this listener by mistake (`tailscale funnel 80`, which
+// arrives from localhost) can't skip sign-in.
+func notFunnel(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Tailscale-Funnel-Request") != "" {
+			http.Error(w, "this address is not published on the internet", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, withVia(r, viaPrivate))
+	})
+}
+
 // sourceCheck rejects requests whose peer address is outside the allowed
 // networks (the tailnet by default; the home LAN too when configured). This is
 // the application-level copy of the nftables and systemd IPAddressAllow rules.
@@ -167,15 +182,20 @@ func limits(next http.Handler) http.Handler {
 	})
 }
 
-// limiterSet holds two token buckets per device: a short-term rate (stops
-// bursts) and a daily budget (bounds how fast a compromised device could grow
-// the append-only audit log and fill the SD card).
+// limiterSet holds two token buckets per key (device, account or address): a
+// short-term rate (stops bursts) and a daily budget (bounds how fast a
+// compromised device could grow the append-only audit log and fill the SD
+// card). Memory is bounded: idle keys are dropped once both their buckets
+// would be full again, and past maxKeys new keys share one overflow bucket.
 type limiterSet struct {
-	mu    sync.Mutex
-	limit rate.Limit // short-term rate; <= 0 disables
-	burst int
-	daily int // changes per device per 24 h; <= 0 disables
-	m     map[string]*limiterEntry
+	mu        sync.Mutex
+	limit     rate.Limit // short-term rate; <= 0 disables
+	burst     int
+	daily     int           // per key per 24 h; <= 0 disables
+	idle      time.Duration // after this long unused, an entry is as good as new
+	maxKeys   int
+	lastSweep time.Time
+	m         map[string]*limiterEntry
 }
 
 type limiterEntry struct {
@@ -183,22 +203,42 @@ type limiterEntry struct {
 	seen       time.Time
 }
 
+const (
+	limiterMaxKeys    = 10000
+	limiterSweepAt    = 1000
+	limiterSweepEvery = 10 * time.Second
+	overflowKey       = "\x00overflow"
+)
+
 func newLimiterSet(limit rate.Limit, burst, daily int) *limiterSet {
-	return &limiterSet{limit: limit, burst: burst, daily: daily, m: make(map[string]*limiterEntry)}
+	idle := time.Minute
+	switch {
+	case daily > 0:
+		idle = 24 * time.Hour
+	case limit > 0 && limit != rate.Inf:
+		idle = time.Duration(float64(burst)/float64(limit)*float64(time.Second)) + time.Second
+	}
+	return &limiterSet{limit: limit, burst: burst, daily: daily, idle: idle,
+		maxKeys: limiterMaxKeys, m: make(map[string]*limiterEntry)}
 }
 
 func (ls *limiterSet) allow(key string) bool {
 	now := time.Now()
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	if len(ls.m) > 1000 {
+	if len(ls.m) >= limiterSweepAt && now.Sub(ls.lastSweep) >= limiterSweepEvery {
+		ls.lastSweep = now
 		for k, e := range ls.m {
-			if now.Sub(e.seen) > 24*time.Hour { // a full day idle: both buckets are full again
+			if now.Sub(e.seen) > ls.idle {
 				delete(ls.m, k)
 			}
 		}
 	}
 	e, ok := ls.m[key]
+	if !ok && len(ls.m) >= ls.maxKeys {
+		key = overflowKey
+		e, ok = ls.m[key]
+	}
 	if !ok {
 		e = &limiterEntry{}
 		if ls.limit > 0 {
@@ -260,15 +300,31 @@ func (s *Server) identify(r *http.Request) (store.Actor, whois.Identity, error) 
 	return store.Actor{Login: id.Login, Node: id.Node, IP: ip.String()}, id, err
 }
 
+// actor is who r's changes are recorded as, and the key their write budget is
+// counted under: the signed-in account on the public address, otherwise the
+// Tailscale device (or the IP address when WhoIs knows nobody).
+func (s *Server) actor(r *http.Request) (store.Actor, string) {
+	if sc := sessionOf(r); sc != nil {
+		ip, _ := peerIP(r)
+		label := sc.Provider
+		if p := s.providerByID[sc.Provider]; p != nil {
+			label = p.Label()
+		}
+		return store.Actor{Login: sc.Email, Node: "via " + label, IP: ip.String()},
+			"user:" + sc.Provider + ":" + sc.Subject
+	}
+	a, _, _ := s.identify(r)
+	if a.Node != "" {
+		return a, "node:" + a.Node
+	}
+	return a, "ip:" + a.IP
+}
+
 // write wraps a mutating handler: it attributes the request to an actor and
 // applies the per-actor write rate limit.
 func (s *Server) write(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		a, _, _ := s.identify(r)
-		key := "ip:" + a.IP
-		if a.Node != "" {
-			key = "node:" + a.Node
-		}
+		a, key := s.actor(r)
 		if !s.writes.allow(key) {
 			w.Header().Set("Retry-After", "10")
 			http.Error(w, "too many changes; slow down", http.StatusTooManyRequests)

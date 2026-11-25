@@ -15,6 +15,10 @@ setting: `bootstrap.sh --name go`, or `name = "go"` in `deploy/cloud`.
 - **No logins, full accountability.** Anyone on the tailnet can create or edit
   a link. Every change records who made it (Tailscale WhoIs), and any earlier
   version can be restored with one click.
+- **Public access, if you want it.** Optionally publish it on the internet at
+  `https://ot.<tailnet>.ts.net` through Tailscale Funnel. People outside the
+  tailnet sign in with Google or Slack, and only accounts on your allow list
+  get in ([docs/public-access.md](docs/public-access.md)).
 - **Small and boring to run.** One static Go binary, SQLite, about 30 MB of RAM,
   near-zero disk writes when idle, automatic OS updates, and hourly
   snapshots to S3.
@@ -43,11 +47,12 @@ make fuzz     # fuzz URL validation and template expansion
 ```
 
 ```
-cmd/ot/            serve | snapshot | backup | export | import | version
+cmd/ot/            serve | snapshot | backup | export | import | sessions | version
 internal/link/     names, destination validation, template expansion (+ fuzz tests)
 internal/store/    SQLite: links, append-only audit log, snapshots
 internal/app/      validation, click batching, snapshot scheduling
-internal/web/      middleware, handlers, templates, JSON API
+internal/web/      middleware, handlers, templates, JSON API, public (Funnel) address
+internal/auth/     Google and Slack sign-in (OpenID Connect)
 internal/whois/    tailscaled LocalAPI WhoIs client
 internal/backup/   S3 upload of the newest snapshot
 deploy/host/       bootstrap (Pi or cloud), firewall, install/verify/restore scripts
@@ -74,7 +79,8 @@ make deploy TARGET=<you>@ot      # builds arm64 + amd64, ships the one the host 
 
 ## Security
 
-Every request passes these checks before any handler runs:
+Every request on the tailnet address passes these checks before any handler
+runs:
 
 1. the peer must be a tailnet address;
 2. `Host` must be one of `OT_HOSTS` (blocks DNS rebinding);
@@ -88,6 +94,12 @@ backslashes or look-alike Unicode. Template placeholders can never change the
 host. Redirects are always `302` with `no-store`, so edits take effect
 immediately. The JSON API requires `application/json`, so browsers must send
 a CORS preflight, which is never granted.
+
+The optional public address reaches ot over a socket that only Tailscale can
+open. There, everything except the sign-in pages needs a session from an
+allow-listed Google or Slack account. Tailnet devices are recognised and
+skip sign-in. Sessions are server-side, in `__Host-` cookies that are
+Secure, HttpOnly and SameSite=Lax.
 
 On the host, the service runs under a tight systemd sandbox: read-only
 system, syscall filter, only `CAP_NET_BIND_SERVICE`, and only tailnet peers

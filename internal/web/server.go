@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,6 +21,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"otterly-go/internal/app"
+	"otterly-go/internal/auth"
 	"otterly-go/internal/link"
 	"otterly-go/internal/store"
 	"otterly-go/internal/whois"
@@ -44,6 +46,15 @@ type Config struct {
 	ThrottledPath string
 	Version       string
 	Logger        *slog.Logger
+
+	// PublicURL is the https:// address that Tailscale Serve and Funnel
+	// publish for this server (https://ot.<tailnet>.ts.net). Empty disables
+	// the public handler. People reaching it from the internet must sign in
+	// with one of Providers; tailnet devices don't.
+	PublicURL string
+	Providers []*auth.Provider
+	// SessionTTL is how long a sign-in lasts (default 30 days).
+	SessionTTL time.Duration
 }
 
 // Server serves ot over HTTP.
@@ -60,6 +71,16 @@ type Server struct {
 	writes  *limiterSet
 	started time.Time
 	handler http.Handler
+
+	// Public address (zero when not configured).
+	public       http.Handler
+	publicURL    string // https://host, no trailing slash
+	publicHost   string
+	providers    []*auth.Provider
+	providerByID map[string]*auth.Provider
+	attempts     *auth.Attempts
+	anon         *limiterSet // requests from the internet without a session, per IP or IPv6 /64
+	sessionTTL   time.Duration
 }
 
 //go:embed templates/*.html
@@ -68,7 +89,7 @@ var templateFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
-var pageNames = []string{"home", "list", "form", "detail", "notfound", "activity", "error", "whoami"}
+var pageNames = []string{"home", "list", "form", "detail", "notfound", "activity", "error", "whoami", "signin"}
 
 // New builds a server.
 func New(cfg Config, svc *app.Service, who whois.Resolver) (*Server, error) {
@@ -113,13 +134,66 @@ func New(cfg Config, svc *app.Service, who whois.Resolver) (*Server, error) {
 	}
 	s.static = sub
 	s.handler = s.routes()
+	if err := s.setupPublic(); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+// setupPublic validates the public-address settings and builds its handler.
+func (s *Server) setupPublic() error {
+	cfg := s.cfg
+	if cfg.PublicURL == "" {
+		if len(cfg.Providers) > 0 {
+			return errors.New("sign-in providers need a public URL")
+		}
+		return nil
+	}
+	u, err := url.Parse(cfg.PublicURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("public URL %q: want https://<name>.<tailnet>.ts.net", cfg.PublicURL)
+	}
+	if len(cfg.Providers) == 0 {
+		return errors.New("a public URL needs at least one sign-in provider (Google or Slack)")
+	}
+	s.publicHost = strings.TrimSuffix(normalizeHost(u.Host), ":443")
+	s.publicURL = "https://" + s.publicHost
+	s.providerByID = make(map[string]*auth.Provider)
+	for _, p := range cfg.Providers {
+		if s.providerByID[p.ID()] != nil {
+			return fmt.Errorf("sign-in provider %s configured twice", p.ID())
+		}
+		s.providerByID[p.ID()] = p
+		s.providers = append(s.providers, p)
+	}
+	s.sessionTTL = cfg.SessionTTL
+	if s.sessionTTL <= 0 {
+		s.sessionTTL = 30 * 24 * time.Hour
+	}
+	s.attempts = auth.NewAttempts(signinTTL)
+	s.anon = newLimiterSet(rate.Limit(1), 30, 0) // 60/min, bursts of 30
+	s.public = s.publicRoutes()
+	return nil
 }
 
 // ServeHTTP implements http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
 
 func (s *Server) routes() http.Handler {
+	var h http.Handler = s.crossOrigin().Handler(s.mux(false))
+	h = limits(h)
+	h = s.hostCheck(h)
+	h = s.sourceCheck(h)
+	h = notFunnel(h)
+	h = s.logRequests(h)
+	h = securityHeaders(h)
+	h = s.recoverer(h)
+	return h
+}
+
+// mux routes requests; the public listener adds the sign-in pages.
+func (s *Server) mux(public bool) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /{$}", s.home)
@@ -152,24 +226,26 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("PUT /_/api/links/{name}", s.write(s.apiUpdate))
 	mux.HandleFunc("DELETE /_/api/links/{name}", s.write(s.apiDelete))
 
-	// Cross-origin protection for every non-GET/HEAD/OPTIONS request. Over
-	// plain HTTP browsers do not send Sec-Fetch-Site, so this compares the
-	// Origin header with Host; hostCheck (outside) guarantees Host is ours.
+	if public {
+		mux.HandleFunc("GET /_/signin", s.signin)
+		mux.HandleFunc("POST /_/signout", s.signout)
+		mux.HandleFunc("GET /_/auth/{provider}/start", s.authStart)
+		mux.HandleFunc("GET /_/auth/{provider}/callback", s.authCallback)
+	}
+	return mux
+}
+
+// crossOrigin rejects cross-origin non-GET/HEAD/OPTIONS requests. Over plain
+// HTTP browsers do not send Sec-Fetch-Site, so it compares the Origin header
+// with Host; hostCheck and fromServe (outside) guarantee Host is ours.
+func (s *Server) crossOrigin() *http.CrossOriginProtection {
 	cop := http.NewCrossOriginProtection()
 	cop.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("blocked cross-origin request", "method", r.Method, "path", r.URL.Path,
 			"origin", r.Header.Get("Origin"), "remote", r.RemoteAddr)
 		http.Error(w, "cross-origin request blocked", http.StatusForbidden)
 	}))
-
-	var h http.Handler = cop.Handler(mux)
-	h = limits(h)
-	h = s.hostCheck(h)
-	h = s.sourceCheck(h)
-	h = s.logRequests(h)
-	h = securityHeaders(h)
-	h = s.recoverer(h)
-	return h
+	return cop
 }
 
 func (s *Server) staticHandler() http.Handler {
@@ -244,6 +320,14 @@ type view struct {
 	PeerIP    string
 	OnTailnet bool
 	WhoIsErr  string
+
+	// Public address.
+	Bare      bool // sign-in page: no search box, navigation or footer links
+	Next      string
+	Providers []providerView
+	Session   *store.Session
+	Provider  string // label of Session's provider
+	Public    bool   // the page was served on the public address
 }
 
 type formData struct {
