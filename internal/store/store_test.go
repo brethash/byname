@@ -29,7 +29,7 @@ func openTest(t *testing.T) *Store {
 
 func mustCreate(t *testing.T, s *Store, name, target string) Link {
 	t.Helper()
-	l, err := s.Create(ctx, Fields{Name: name, Target: target}, alice, 0)
+	l, err := s.Create(ctx, Fields{Name: name, Target: target}, alice)
 	if err != nil {
 		t.Fatalf("create %s: %v", name, err)
 	}
@@ -46,7 +46,7 @@ func TestCreateGetAndKeyUniqueness(t *testing.T) {
 	if err != nil || got.ID != l.ID {
 		t.Fatalf("Get = %+v, %v", got, err)
 	}
-	if _, err := s.Create(ctx, Fields{Name: "wiki_home", Target: "https://x.com"}, bob, 0); !errors.Is(err, ErrExists) {
+	if _, err := s.Create(ctx, Fields{Name: "wiki_home", Target: "https://x.com"}, bob); !errors.Is(err, ErrExists) {
 		t.Fatalf("duplicate key err = %v", err)
 	}
 	if _, err := s.Get(ctx, "nope"); !errors.Is(err, ErrNotFound) {
@@ -56,11 +56,25 @@ func TestCreateGetAndKeyUniqueness(t *testing.T) {
 
 func TestMaxLinks(t *testing.T) {
 	s := openTest(t)
-	if _, err := s.Create(ctx, Fields{Name: "a", Target: "https://a.com"}, alice, 1); err != nil {
+	s.SetMaxLinks(1)
+	a := mustCreate(t, s, "a", "https://a.com")
+	if _, err := s.Create(ctx, Fields{Name: "b", Target: "https://b.com"}, alice); !errors.Is(err, ErrLimit) {
+		t.Fatalf("create over cap err = %v, want ErrLimit", err)
+	}
+	if r, _ := s.Import(ctx, []Fields{{Name: "c", Target: "https://c.com"}}, alice, false); r.Created != 0 || len(r.Errors) != 1 {
+		t.Fatalf("import over cap = %+v", r)
+	}
+	// Delete a, create b, then restoring or reverting a must not exceed the cap.
+	if err := s.Delete(ctx, a.ID, alice); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Create(ctx, Fields{Name: "b", Target: "https://b.com"}, alice, 1); !errors.Is(err, ErrLimit) {
-		t.Fatalf("err = %v, want ErrLimit", err)
+	mustCreate(t, s, "b", "https://b.com")
+	if _, err := s.Restore(ctx, a.ID, alice); !errors.Is(err, ErrLimit) {
+		t.Fatalf("restore over cap err = %v", err)
+	}
+	hist, _ := s.History(ctx, a.ID)
+	if _, err := s.RevertTo(ctx, hist[len(hist)-1].ID, alice); !errors.Is(err, ErrLimit) {
+		t.Fatalf("revert-undelete over cap err = %v", err)
 	}
 }
 

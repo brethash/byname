@@ -103,8 +103,28 @@ type Event struct {
 
 // Store is a SQLite-backed link store. It is safe for concurrent use.
 type Store struct {
-	db  *sql.DB
-	now func() time.Time
+	db       *sql.DB
+	now      func() time.Time
+	maxLinks int // live-link cap; 0 = unlimited
+}
+
+// SetMaxLinks caps the number of live links. Every path that makes a link
+// live (create, import, restore, revert of a deleted link) enforces it inside
+// its transaction. n <= 0 removes the cap.
+func (s *Store) SetMaxLinks(n int) { s.maxLinks = n }
+
+func (s *Store) checkCap(ctx context.Context, q querier) error {
+	if s.maxLinks <= 0 {
+		return nil
+	}
+	var n int
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM links WHERE deleted_at IS NULL`).Scan(&n); err != nil {
+		return err
+	}
+	if n >= s.maxLinks {
+		return ErrLimit
+	}
+	return nil
 }
 
 //go:embed migrations/*.sql
@@ -275,25 +295,19 @@ func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
-// Create adds a link. maxLinks <= 0 means no limit.
-func (s *Store) Create(ctx context.Context, f Fields, a Actor, maxLinks int) (Link, error) {
-	return s.create(ctx, f, a, maxLinks, "create")
+// Create adds a link.
+func (s *Store) Create(ctx context.Context, f Fields, a Actor) (Link, error) {
+	return s.create(ctx, f, a, "create")
 }
 
-func (s *Store) create(ctx context.Context, f Fields, a Actor, maxLinks int, action string) (Link, error) {
+func (s *Store) create(ctx context.Context, f Fields, a Actor, action string) (Link, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Link{}, err
 	}
 	defer tx.Rollback()
-	if maxLinks > 0 {
-		var n int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM links WHERE deleted_at IS NULL`).Scan(&n); err != nil {
-			return Link{}, err
-		}
-		if n >= maxLinks {
-			return Link{}, ErrLimit
-		}
+	if err := s.checkCap(ctx, tx); err != nil {
+		return Link{}, err
 	}
 	key := link.Key(f.Name)
 	if taken, err := liveKeyTaken(ctx, tx, key, 0); err != nil {
@@ -357,6 +371,11 @@ func (s *Store) Update(ctx context.Context, id, rev int64, f Fields, a Actor) (L
 
 // apply writes f onto cur (optionally undeleting it) and records an event.
 func (s *Store) apply(ctx context.Context, tx *sql.Tx, cur Link, f Fields, a Actor, action string, undelete bool) (Link, error) {
+	if undelete {
+		if err := s.checkCap(ctx, tx); err != nil {
+			return Link{}, err
+		}
+	}
 	key := link.Key(f.Name)
 	if key != cur.Key || undelete {
 		if taken, err := liveKeyTaken(ctx, tx, key, cur.ID); err != nil {
@@ -656,7 +675,7 @@ func (s *Store) Import(ctx context.Context, items []Fields, a Actor, overwrite b
 		cur, err := s.Get(ctx, link.Key(f.Name))
 		switch {
 		case errors.Is(err, ErrNotFound):
-			if _, err := s.create(ctx, f, a, 0, "import"); err != nil {
+			if _, err := s.create(ctx, f, a, "import"); err != nil {
 				res.Errors = append(res.Errors, f.Name+": "+err.Error())
 				continue
 			}
