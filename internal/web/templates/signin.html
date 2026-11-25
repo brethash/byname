@@ -1,9 +1,9 @@
 {{define "content"}}
 <section class="card signin">
-  <h1>Sign in to {{host}}/</h1>
+  <h1>Sign in to {{brand}}/</h1>
   {{with .Message}}<p class="muted">{{.}}</p>{{end}}
   {{with .Error}}<p class="error" role="alert">{{.}}</p>{{end}}
-  <p class="muted">You're outside the home network, so {{host}}/ needs to know who you are.</p>
+  <p class="muted">You're outside the home network, so {{brand}}/ needs to know who you are.</p>
   <div class="actions">
   {{range .Providers}}<a class="btn primary" href="/_/auth/{{.ID}}/start?next={{$.Next}}">Continue with {{.Label}}</a>
   {{end}}</div>

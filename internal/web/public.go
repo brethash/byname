@@ -244,12 +244,12 @@ func (s *Server) redirectURI(p *auth.Provider) string {
 
 type providerView struct{ ID, Label string }
 
-func (s *Server) renderSignin(w http.ResponseWriter, status int, next, msg, errMsg string) {
+func (s *Server) renderSignin(w http.ResponseWriter, r *http.Request, status int, next, msg, errMsg string) {
 	v := view{Title: "Sign in", Bare: true, Next: safeNext(next), Message: msg, Error: errMsg}
 	for _, p := range s.providers {
 		v.Providers = append(v.Providers, providerView{ID: p.ID(), Label: p.Label()})
 	}
-	s.render(w, status, "signin", v)
+	s.render(w, r, status, "signin", v)
 }
 
 func (s *Server) signin(w http.ResponseWriter, r *http.Request) {
@@ -258,11 +258,17 @@ func (s *Server) signin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, safeNext(next), http.StatusSeeOther)
 		return
 	}
-	msg := ""
 	if r.URL.Query().Has("out") {
-		msg = "You're signed out."
+		// Show the page rather than going straight back to the provider,
+		// which would sign the person in again at once.
+		s.renderSignin(w, r, http.StatusOK, "/", "You're signed out.", "")
+		return
 	}
-	s.renderSignin(w, http.StatusOK, next, msg, "")
+	if len(s.providers) == 1 { // nothing to choose: go straight to it
+		http.Redirect(w, r, "/_/auth/"+s.providers[0].ID()+"/start?next="+url.QueryEscape(safeNext(next)), http.StatusSeeOther)
+		return
+	}
+	s.renderSignin(w, r, http.StatusOK, next, "", "")
 }
 
 func (s *Server) authStart(w http.ResponseWriter, r *http.Request) {
@@ -279,7 +285,7 @@ func (s *Server) authStart(w http.ResponseWriter, r *http.Request) {
 	a, cookie, err := s.attempts.Start(p.ID(), next)
 	if err != nil {
 		s.log.Error("sign-in start failed", "err", err)
-		s.renderSignin(w, http.StatusInternalServerError, next, "", "Couldn't start signing in. Try again.")
+		s.renderSignin(w, r, http.StatusInternalServerError, next, "", "Couldn't start signing in. Try again.")
 		return
 	}
 	setCookie(w, signinCookie, cookie, signinTTL)
@@ -302,13 +308,13 @@ func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
 		// The browser's sign-in cookie is left alone, so a stray or forged
 		// callback can't cancel a real sign-in in progress.
 		s.log.Info("sign-in callback without a matching sign-in", "provider", p.ID(), "remote", r.RemoteAddr)
-		s.renderSignin(w, http.StatusBadRequest, "/", "", "That sign-in expired or was started in another tab. Try again.")
+		s.renderSignin(w, r, http.StatusBadRequest, "/", "", "That sign-in expired or was started in another tab. Try again.")
 		return
 	}
 	clearCookie(w, signinCookie) // used once
 	if e := q.Get("error"); e != "" {
 		s.log.Info("sign-in cancelled", "provider", p.ID(), "error", trunc(e, 40), "remote", r.RemoteAddr)
-		s.renderSignin(w, http.StatusOK, a.Next, "", "Sign-in with "+p.Label()+" was cancelled.")
+		s.renderSignin(w, r, http.StatusOK, a.Next, "", "Sign-in with "+p.Label()+" was cancelled.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -316,13 +322,13 @@ func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
 	claims, err := p.Exchange(ctx, q.Get("code"), s.redirectURI(p), a.Verifier, a.Nonce)
 	if err != nil {
 		s.log.Warn("sign-in failed", "provider", p.ID(), "err", err, "remote", r.RemoteAddr)
-		s.renderSignin(w, http.StatusBadGateway, a.Next, "", "Couldn't finish signing in with "+p.Label()+". Try again.")
+		s.renderSignin(w, r, http.StatusBadGateway, a.Next, "", "Couldn't finish signing in with "+p.Label()+". Try again.")
 		return
 	}
 	if !p.Allowed(claims) {
 		s.log.Warn("sign-in refused: not on the allow list", "provider", p.ID(), "email", claims.Email,
 			"org", claims.Org, "remote", r.RemoteAddr)
-		s.renderSignin(w, http.StatusForbidden, a.Next, "",
+		s.renderSignin(w, r, http.StatusForbidden, a.Next, "",
 			claims.Email+" isn't allowed to use "+s.display+"/. Ask whoever runs it to add you, or sign in with another account.")
 		return
 	}
@@ -339,7 +345,7 @@ func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
 		Org: claims.Org, IP: ip.String(), Created: now, Expires: now.Add(s.sessionTTL),
 	}); err != nil {
 		s.log.Error("session create failed", "err", err)
-		s.renderSignin(w, http.StatusInternalServerError, a.Next, "", "Couldn't finish signing in. Try again.")
+		s.renderSignin(w, r, http.StatusInternalServerError, a.Next, "", "Couldn't finish signing in. Try again.")
 		return
 	}
 	setCookie(w, sessionCookie, token, s.sessionTTL)

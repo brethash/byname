@@ -14,6 +14,12 @@ https://ot.<tailnet>.ts.net/wiki
 | Home-network devices (Pi with `--lan-access`) | `ot/wiki` as before | none |
 | Anyone else on the internet | the https address | **Google or Slack**, and only accounts on your allow list |
 
+People coming in from the internet don't have the short `ot/` name (that
+needs Tailscale), so for them ot's pages show links as
+`ot.<tailnet>.ts.net/wiki`. With only one provider configured, there's
+nothing to choose, so they go straight to Google or Slack. After signing
+out, they stay on the sign-in page.
+
 Changes made by people who signed in are recorded as `alice@gmail.com (via
 Google)` in the history.
 

@@ -240,7 +240,7 @@ func TestPublicInternetNeedsSignIn(t *testing.T) {
 		// No forwarding headers: treated as the internet, never as the tailnet.
 		{"no X-Forwarded-For", "GET", "/wiki", nil, http.StatusSeeOther},
 		{"garbage X-Forwarded-For", "GET", "/wiki", []reqOpt{serveFrom("100.64.0.1, 203.0.113.9")}, http.StatusSeeOther},
-		{"sign-in page", "GET", "/_/signin", []reqOpt{funnel("203.0.113.9")}, http.StatusOK},
+		{"sign-in page, one provider", "GET", "/_/signin", []reqOpt{funnel("203.0.113.9")}, http.StatusSeeOther},
 		{"stylesheet", "GET", "/_/static/style.css", []reqOpt{funnel("203.0.113.9")}, http.StatusOK},
 		{"favicon", "GET", "/favicon.ico", []reqOpt{funnel("203.0.113.9")}, http.StatusOK},
 		{"other host", "GET", "/wiki", []reqOpt{funnel("203.0.113.9"), header("X-Forwarded-Host", "evil.example")}, http.StatusMisdirectedRequest},
@@ -255,13 +255,78 @@ func TestPublicInternetNeedsSignIn(t *testing.T) {
 	if loc := w.Header().Get("Location"); loc != "/_/signin?next=%2Fwiki%3Fx%3D1" {
 		t.Errorf("Location = %q", loc)
 	}
-	w = h.pub("GET", "/_/signin?next=%2Fwiki", "", funnel("203.0.113.9"))
+}
+
+func TestSignInOneProviderGoesStraightThere(t *testing.T) {
+	h, _ := newPublicHarness(t)
+	w := h.pub("GET", "/_/signin?next=%2Fwiki%3Fx%3D1", "", funnel("203.0.113.9"))
+	expectStatus(t, w, http.StatusSeeOther)
+	if loc := w.Header().Get("Location"); loc != "/_/auth/google/start?next=%2Fwiki%3Fx%3D1" {
+		t.Errorf("Location = %q", loc)
+	}
+	w = h.pub("GET", "/_/signin?next=%2F%2Fevil.example", "", funnel("203.0.113.9"))
+	if loc := w.Header().Get("Location"); loc != "/_/auth/google/start?next=%2F" {
+		t.Errorf("unsafe next passed along: %q", loc)
+	}
+	// After signing out, stay on the page: going back to Google would sign
+	// the person straight back in.
+	w = h.pub("GET", "/_/signin?out=1", "", funnel("203.0.113.9"))
+	expectStatus(t, w, http.StatusOK)
+	if body := w.Body.String(); !strings.Contains(body, "You&#39;re signed out.") || !strings.Contains(body, "Continue with Google") {
+		t.Errorf("signed-out page: %.600s", body)
+	}
+}
+
+func TestSignInChooser(t *testing.T) {
+	g := newFakeGoogle(t)
+	slack, err := auth.Slack(auth.SlackConfig{ClientID: "sid", ClientSecret: "s", Teams: []string{"T0123ABCD"}},
+		auth.WithEndpoints("https://slack.test/auth", "https://slack.test/token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, func(c *Config) {
+		c.PublicURL = publicURL
+		c.Providers = []*auth.Provider{g.provider(t, "alice@gmail.com"), slack}
+	})
+	w := h.pub("GET", "/_/signin?next=%2Fwiki", "", funnel("203.0.113.9"))
+	expectStatus(t, w, http.StatusOK)
 	body := w.Body.String()
-	if !strings.Contains(body, `href="/_/auth/google/start?next=%2fwiki"`) || !strings.Contains(body, "Continue with Google") {
-		t.Errorf("sign-in page: %.600s", body)
+	for _, want := range []string{
+		`href="/_/auth/google/start?next=%2fwiki"`, "Continue with Google",
+		`href="/_/auth/slack/start?next=%2fwiki"`, "Continue with Slack",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("chooser lacks %q: %.800s", want, body)
+		}
 	}
 	if strings.Contains(body, `href="/_/new"`) {
 		t.Error("sign-in page shows the navigation")
+	}
+}
+
+func TestInternetPagesShowThePublicAddress(t *testing.T) {
+	h, g := newPublicHarness(t)
+	h.create("wiki", "https://wiki.example.com/")
+	sess, _ := signIn(t, h, g, "203.0.113.9", "/")
+	home := h.pub("GET", "/", "", funnel("203.0.113.9"), withCookie(sess)).Body.String()
+	if !strings.Contains(home, "https://ot.example.ts.net/name") || !strings.Contains(home, `class="brand" href="/">ot<span>/</span>`) {
+		t.Errorf("internet home page: %.1500s", home)
+	}
+	if strings.Contains(home, "on any device on the tailnet") {
+		t.Error("internet home page tells people to use the tailnet name")
+	}
+	list := h.pub("GET", "/_/links", "", funnel("203.0.113.9"), withCookie(sess)).Body.String()
+	if !strings.Contains(list, ">ot.example.ts.net/wiki</a>") {
+		t.Errorf("internet link list: %.1500s", list)
+	}
+	// Tailnet devices, through Serve or directly, keep the short name.
+	for name, w := range map[string]*httptest.ResponseRecorder{
+		"serve":   h.pub("GET", "/", "", serveFrom("100.64.0.1")),
+		"private": h.do("GET", "/", ""),
+	} {
+		if body := w.Body.String(); !strings.Contains(body, "Type <code>ot/name</code>") || strings.Contains(body, "ts.net/name") {
+			t.Errorf("%s home page: %.1500s", name, body)
+		}
 	}
 }
 
@@ -426,7 +491,9 @@ func TestPublicAnonymousRateLimit(t *testing.T) {
 	if !limited {
 		t.Fatal("40 anonymous requests in a row were never limited")
 	}
-	expectStatus(t, h.pub("GET", "/_/signin", "", funnel("203.0.113.10")), http.StatusOK)
+	if code := h.pub("GET", "/_/signin", "", funnel("203.0.113.10")).Code; code == http.StatusTooManyRequests {
+		t.Error("another address was limited too")
+	}
 }
 
 func TestSafeNext(t *testing.T) {

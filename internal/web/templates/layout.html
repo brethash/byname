@@ -5,15 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="same-origin">
 <meta name="color-scheme" content="light dark">
-<title>{{.Title}} · {{host}}/</title>
+<title>{{.Title}} · {{brand}}/</title>
 <link rel="stylesheet" href="/_/static/style.css?v={{.Version}}">
 <link rel="icon" href="/_/favicon.svg" type="image/svg+xml">
-<link rel="search" type="application/opensearchdescription+xml" title="{{host}}/" href="/_/opensearch.xml">
+<link rel="search" type="application/opensearchdescription+xml" title="{{brand}}/" href="/_/opensearch.xml">
 <script src="/_/static/app.js?v={{.Version}}" defer></script>
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="/">{{host}}<span>/</span></a>
+  <a class="brand" href="/">{{brand}}<span>/</span></a>
   {{if not .Bare}}<form class="search" action="/_/links" method="get" role="search">
     <input type="search" name="q" value="{{.Query}}" placeholder="Search links  ( / )" aria-label="Search links" autocomplete="off">
   </form>
@@ -27,7 +27,7 @@
 {{template "content" .}}
 </main>
 <footer>
-  <span>{{host}}/ {{.Version}}</span>{{if not .Bare}} ·
+  <span>{{brand}}/ {{.Version}}</span>{{if not .Bare}} ·
   <a href="/_/export">Export</a> ·
   <a href="/_/links?deleted=1">Deleted</a> ·
   <a href="/_/whoami">Who am I?</a>{{end}}

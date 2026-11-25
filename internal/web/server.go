@@ -67,10 +67,13 @@ type Server struct {
 	display string
 	favicon []byte
 	pages   map[string]*template.Template
-	static  fs.FS
-	writes  *limiterSet
-	started time.Time
-	handler http.Handler
+	// internetPages render for people reaching the public address from the
+	// internet: they type the full https name, not the tailnet's short one.
+	internetPages map[string]*template.Template
+	static        fs.FS
+	writes        *limiterSet
+	started       time.Time
+	handler       http.Handler
 
 	// Public address (zero when not configured).
 	public       http.Handler
@@ -112,7 +115,6 @@ func New(cfg Config, svc *app.Service, who whois.Resolver) (*Server, error) {
 		log:     cfg.Logger,
 		hosts:   make(map[string]bool),
 		display: normalizeHost(cfg.Hosts[0]),
-		pages:   make(map[string]*template.Template),
 		writes:  newLimiterSet(cfg.WriteRate, cfg.WriteBurst, cfg.WriteDaily),
 		started: time.Now(),
 	}
@@ -120,14 +122,11 @@ func New(cfg Config, svc *app.Service, who whois.Resolver) (*Server, error) {
 	for _, h := range cfg.Hosts {
 		s.hosts[normalizeHost(h)] = true
 	}
-	for _, name := range pageNames {
-		t, err := template.New(name).Funcs(s.funcs()).ParseFS(templateFS,
-			"templates/layout.html", "templates/partials.html", "templates/"+name+".html")
-		if err != nil {
-			return nil, fmt.Errorf("template %s: %w", name, err)
-		}
-		s.pages[name] = t
+	pages, err := s.parsePages(s.display, false)
+	if err != nil {
+		return nil, err
 	}
+	s.pages = pages
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return nil, err
@@ -172,6 +171,11 @@ func (s *Server) setupPublic() error {
 		s.sessionTTL = 30 * 24 * time.Hour
 	}
 	s.attempts = auth.NewAttempts(signinTTL)
+	pages, err := s.parsePages(s.publicHost, true)
+	if err != nil {
+		return err
+	}
+	s.internetPages = pages
 	s.anon = newLimiterSet(rate.Limit(1), 30, 0) // 60/min, bursts of 30
 	s.anon.evict = true
 	s.public = s.publicRoutes()
@@ -341,11 +345,30 @@ type formData struct {
 	Errors      map[string]string // field → message
 }
 
-func (s *Server) render(w http.ResponseWriter, status int, page string, v view) {
+// parsePages parses every page with host as what people type before
+// "/name" ("ot", or the public https name for people on the internet).
+func (s *Server) parsePages(host string, internet bool) (map[string]*template.Template, error) {
+	pages := make(map[string]*template.Template)
+	for _, name := range pageNames {
+		t, err := template.New(name).Funcs(s.funcs(host, internet)).ParseFS(templateFS,
+			"templates/layout.html", "templates/partials.html", "templates/"+name+".html")
+		if err != nil {
+			return nil, fmt.Errorf("template %s: %w", name, err)
+		}
+		pages[name] = t
+	}
+	return pages, nil
+}
+
+func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, page string, v view) {
 	v.Host = s.display
 	v.Version = s.cfg.Version
+	pages := s.pages
+	if fromInternet(r) && s.internetPages != nil {
+		pages = s.internetPages
+	}
 	var buf bytes.Buffer
-	if err := s.pages[page].ExecuteTemplate(&buf, "layout", v); err != nil {
+	if err := pages[page].ExecuteTemplate(&buf, "layout", v); err != nil {
 		s.log.Error("render failed", "page", page, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -356,8 +379,8 @@ func (s *Server) render(w http.ResponseWriter, status int, page string, v view) 
 	w.Write(buf.Bytes())
 }
 
-func (s *Server) renderError(w http.ResponseWriter, status int, title, msg string) {
-	s.render(w, status, "error", view{Title: title, Error: msg})
+func (s *Server) renderError(w http.ResponseWriter, r *http.Request, status int, title, msg string) {
+	s.render(w, r, status, "error", view{Title: title, Error: msg})
 }
 
 // fail maps a service/store error to a status and an error page. Internal
@@ -366,10 +389,10 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	status := errStatus(err)
 	if status == http.StatusInternalServerError {
 		s.log.Error("request failed", "path", r.URL.Path, "err", err)
-		s.renderError(w, status, "Something went wrong", "The server hit an error. Try again; if it keeps happening, check the logs on the Pi.")
+		s.renderError(w, r, status, "Something went wrong", "The server hit an error. Try again; if it keeps happening, check the logs on the Pi.")
 		return
 	}
-	s.renderError(w, status, http.StatusText(status), err.Error())
+	s.renderError(w, r, status, http.StatusText(status), err.Error())
 }
 
 func errStatus(err error) int {
@@ -386,9 +409,14 @@ func errStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
-func (s *Server) funcs() template.FuncMap {
+// funcs are the template helpers. host is what people type before "/name";
+// brand is the service's name, the same for everyone; internet is true on
+// pages for people outside the tailnet.
+func (s *Server) funcs(host string, internet bool) template.FuncMap {
 	return template.FuncMap{
-		"host":       func() string { return s.display },
+		"host":       func() string { return host },
+		"brand":      func() string { return s.display },
+		"internet":   func() bool { return internet },
 		"ago":        ago,
 		"when":       func(t time.Time) string { return t.Local().Format("2006-01-02 15:04") },
 		"trunc":      trunc,

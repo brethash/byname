@@ -50,7 +50,7 @@ func (s *Server) follow(w http.ResponseWriter, r *http.Request) {
 func (s *Server) redirect(w http.ResponseWriter, r *http.Request, l store.Link, rest, rawQuery string) {
 	dest, err := s.svc.Destination(l, rest, rawQuery)
 	if err != nil {
-		s.render(w, http.StatusBadRequest, "error", view{
+		s.render(w, r, http.StatusBadRequest, "error", view{
 			Title: "Can't build that destination",
 			Error: err.Error(),
 			Link:  &l,
@@ -75,7 +75,7 @@ func (s *Server) notFound(w http.ResponseWriter, r *http.Request, name string, n
 	} else if k := link.Key(name); k != "" {
 		v.Suggestions, _ = s.svc.Store.List(r.Context(), store.ListOptions{Query: name, Limit: 5})
 	}
-	s.render(w, http.StatusNotFound, "notfound", v)
+	s.render(w, r, http.StatusNotFound, "notfound", v)
 }
 
 func (s *Server) home(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +100,7 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	s.render(w, http.StatusOK, "home", v)
+	s.render(w, r, http.StatusOK, "home", v)
 }
 
 var sorts = map[string]bool{"name": true, "recent": true, "popular": true, "created": true}
@@ -127,7 +127,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v.Links = links
-	s.render(w, http.StatusOK, "list", v)
+	s.render(w, r, http.StatusOK, "list", v)
 }
 
 func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
@@ -136,12 +136,12 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	s.render(w, http.StatusOK, "activity", view{Title: "Activity", Events: ev})
+	s.render(w, r, http.StatusOK, "activity", view{Title: "Activity", Events: ev})
 }
 
 func (s *Server) newForm(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	s.render(w, http.StatusOK, "form", view{
+	s.render(w, r, http.StatusOK, "form", view{
 		Title: "New link",
 		Form:  formData{Name: trunc(q.Get("name"), link.MaxNameLen), Target: trunc(q.Get("target"), link.MaxTargetLen)},
 	})
@@ -152,9 +152,9 @@ func (s *Server) parseForm(w http.ResponseWriter, r *http.Request) bool {
 	if err := r.ParseForm(); err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			s.renderError(w, http.StatusRequestEntityTooLarge, "Too large", "That submission is larger than this form accepts.")
+			s.renderError(w, r, http.StatusRequestEntityTooLarge, "Too large", "That submission is larger than this form accepts.")
 		} else {
-			s.renderError(w, http.StatusBadRequest, "Bad request", "The form could not be read.")
+			s.renderError(w, r, http.StatusBadRequest, "Bad request", "The form could not be read.")
 		}
 		return false
 	}
@@ -187,7 +187,7 @@ func (s *Server) formError(w http.ResponseWriter, r *http.Request, fd formData, 
 	if fd.Editing {
 		title = "Edit " + s.display + "/" + fd.Name
 	}
-	s.render(w, status, "form", view{Title: title, Form: fd})
+	s.render(w, r, status, "form", view{Title: title, Form: fd})
 }
 
 func linkPath(name string) string { return "/" + url.PathEscape(name) + "+" }
@@ -215,7 +215,7 @@ func pathID(r *http.Request) (int64, bool) {
 func (s *Server) detailByID(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
-		s.renderError(w, http.StatusNotFound, "Not found", "No such link.")
+		s.renderError(w, r, http.StatusNotFound, "Not found", "No such link.")
 		return
 	}
 	l, err := s.svc.Store.GetByID(r.Context(), id)
@@ -232,13 +232,13 @@ func (s *Server) detail(w http.ResponseWriter, r *http.Request, l store.Link, ms
 		s.fail(w, r, err)
 		return
 	}
-	s.render(w, http.StatusOK, "detail", view{Title: s.display + "/" + l.Name, Link: &l, Events: hist, Message: msg})
+	s.render(w, r, http.StatusOK, "detail", view{Title: s.display + "/" + l.Name, Link: &l, Events: hist, Message: msg})
 }
 
 func (s *Server) editForm(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
-		s.renderError(w, http.StatusNotFound, "Not found", "No such link.")
+		s.renderError(w, r, http.StatusNotFound, "Not found", "No such link.")
 		return
 	}
 	l, err := s.svc.Store.GetByID(r.Context(), id)
@@ -247,10 +247,10 @@ func (s *Server) editForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if l.Deleted() {
-		s.renderError(w, http.StatusConflict, "Link is deleted", "Restore the link before editing it.")
+		s.renderError(w, r, http.StatusConflict, "Link is deleted", "Restore the link before editing it.")
 		return
 	}
-	s.render(w, http.StatusOK, "form", view{Title: "Edit " + s.display + "/" + l.Name, Form: formData{
+	s.render(w, r, http.StatusOK, "form", view{Title: "Edit " + s.display + "/" + l.Name, Form: formData{
 		ID: l.ID, Rev: l.Rev, Name: l.Name, Target: l.Target, Description: l.Description, Editing: true,
 	}})
 }
@@ -258,7 +258,7 @@ func (s *Server) editForm(w http.ResponseWriter, r *http.Request) {
 func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
-		s.renderError(w, http.StatusNotFound, "Not found", "No such link.")
+		s.renderError(w, r, http.StatusNotFound, "Not found", "No such link.")
 		return
 	}
 	if !s.parseForm(w, r) {
@@ -277,7 +277,7 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
-		s.renderError(w, http.StatusNotFound, "Not found", "No such link.")
+		s.renderError(w, r, http.StatusNotFound, "Not found", "No such link.")
 		return
 	}
 	if err := s.svc.Delete(r.Context(), id, actorFrom(r)); err != nil {
@@ -290,7 +290,7 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
-		s.renderError(w, http.StatusNotFound, "Not found", "No such link.")
+		s.renderError(w, r, http.StatusNotFound, "Not found", "No such link.")
 		return
 	}
 	l, err := s.svc.Restore(r.Context(), id, actorFrom(r))
@@ -304,7 +304,7 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 func (s *Server) revert(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
-		s.renderError(w, http.StatusNotFound, "Not found", "No such history entry.")
+		s.renderError(w, r, http.StatusNotFound, "Not found", "No such history entry.")
 		return
 	}
 	l, err := s.svc.RevertTo(r.Context(), id, actorFrom(r))
@@ -347,7 +347,7 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	if sc := sessionOf(r); sc != nil {
 		a, _ := s.actor(r)
 		x := sc.Session
-		s.render(w, http.StatusOK, "whoami", view{Title: "Who am I", Session: &x,
+		s.render(w, r, http.StatusOK, "whoami", view{Title: "Who am I", Session: &x,
 			Provider: strings.TrimPrefix(a.Node, "via "), PeerIP: a.IP, Public: true})
 		return
 	}
@@ -357,5 +357,5 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	if err != nil && v.OnTailnet {
 		v.WhoIsErr = err.Error()
 	}
-	s.render(w, http.StatusOK, "whoami", v)
+	s.render(w, r, http.StatusOK, "whoami", v)
 }
