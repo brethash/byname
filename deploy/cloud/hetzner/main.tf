@@ -27,7 +27,7 @@ locals {
 
   public = var.public_domain != ""
 
-  labels = { app = "nym", service = var.name }
+  labels = { app = "byname", service = var.name }
 }
 
 resource "hcloud_ssh_key" "admin" {

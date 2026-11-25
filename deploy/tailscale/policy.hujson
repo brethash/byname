@@ -1,6 +1,6 @@
 // Tailscale policy additions for byname. Merge these into your tailnet policy
 // file (admin console → Access controls). Replace:
-//   tag:nym             tag:<name> if you chose another service name
+//   tag:me             tag:<name> if you chose another service name
 //                      (bootstrap.sh --name, or `name` in deploy/cloud)
 //   <you@example.com>  your Tailscale login
 //   <admin>            the host's admin user: your own user on a Pi,
@@ -11,14 +11,14 @@
 // allow-all is acceptable: byname enforces its own tailnet-only checks.
 {
   "tagOwners": {
-    "tag:nym": ["<you@example.com>"],
+    "tag:me": ["<you@example.com>"],
   },
 
   "grants": [
     // Household members (not tagged servers, not shared-in users) may use byname:
-    // http://nym/ on port 80, and https://nym.<tailnet>.ts.net on 443 when
+    // http://me/ on port 80, and https://me.<tailnet>.ts.net on 443 when
     // the public address is on.
-    {"src": ["autogroup:member"], "dst": ["tag:nym"], "ip": ["tcp:80", "tcp:443"]},
+    {"src": ["autogroup:member"], "dst": ["tag:me"], "ip": ["tcp:80", "tcp:443"]},
   ],
 
   // Only for bootstrap.sh --public: uncomment to let the host publish its
@@ -26,7 +26,7 @@
   // certificates (admin console → DNS). Leave it commented out for a
   // tailnet-only byname.
   // "nodeAttrs": [
-  //   {"target": ["tag:nym"], "attr": ["funnel"]},
+  //   {"target": ["tag:me"], "attr": ["funnel"]},
   // ],
 
   "ssh": [
@@ -34,7 +34,7 @@
     {
       "action": "check",
       "src":    ["<you@example.com>"],
-      "dst":    ["tag:nym"],
+      "dst":    ["tag:me"],
       "users":  ["<admin>"],
     },
   ],

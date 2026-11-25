@@ -6,13 +6,13 @@ and you can combine them:
 
 | | **Your own domain, no Tailscale** | **Tailscale** |
 |---|---|---|
-| People use | `https://hg.example.com/wiki`, after signing in with Slack or Google | `nym/wiki` on devices running Tailscale, no sign-in |
+| People use | `https://hg.example.com/wiki`, after signing in with Slack or Google | `me/wiki` on devices running Tailscale, no sign-in |
 | You administer it with | OpenSSH, open only to your own addresses (`ssh_cidrs`) | Tailscale SSH over the tailnet |
 | Open to the internet | TCP 80 and 443; TCP 22 from your addresses | nothing (only Tailscale's WireGuard port) |
 | Server | needs IPv4 ($5.00 on Lightsail) | IPv6-only is enough ($3.50) |
 
 **Combining them.** Set `tailscale = true` *and* `public_domain`. Tailnet
-devices then use `nym/` with no sign-in, and everyone else uses your domain
+devices then use `me/` with no sign-in, and everyone else uses your domain
 and signs in. A Tailscale-only server can also get a public address without
 open ports through Tailscale Funnel ([public-access.md](public-access.md)).
 
@@ -23,8 +23,8 @@ Compared with the Pi:
   longer takes the links down for family members who are away.
 - **A monthly bill**, a few dollars (below).
 
-`nym` is the default service name everywhere below. If you set another `name`
-(the walkthrough uses `hg`), use it wherever these docs say `nym` in a
+`me` is the default service name everywhere below. If you set another `name`
+(the walkthrough uses `hg`), use it wherever these docs say `me` in a
 hostname, URL or tag.
 
 ## What it costs
@@ -146,11 +146,11 @@ that made it, for example `alice@example.com (via Slack)`.
    [`deploy/tailscale/policy.hujson`](../deploy/tailscale/policy.hujson) into
    your tailnet policy. Use `tag:<name>`, and `"admin"` as the SSH user (that
    is the admin account on cloud servers).
-3. **No other device named `nym`** on your tailnet, or the new server becomes
-   `nym-1`. If you're moving from the Pi, follow
+3. **No other device named `me`** on your tailnet, or the new server becomes
+   `me-1`. If you're moving from the Pi, follow
    [Moving between hosts](#moving-between-hosts) first.
 4. **A one-off auth key**: admin console → Settings → Keys → *Generate auth
-   key*. Set Reusable off, Ephemeral off, Pre-approved on, Tags `tag:nym`, and
+   key*. Set Reusable off, Ephemeral off, Pre-approved on, Tags `tag:me`, and
    a 1-day expiry. The server uses it once on first boot.
 5. **Provider credentials.** For AWS, your usual CLI credentials
    (`aws configure` or `AWS_PROFILE`). For Hetzner, a project API token with
@@ -179,7 +179,7 @@ tofu apply                                      # shows which server type was in
 ```
 
 First boot takes a minute or two. It sets the hostname, creates an `admin`
-account with your SSH key, installs Tailscale and joins your tailnet as `nym`
+account with your SSH key, installs Tailscale and joins your tailnet as `me`
 with Tailscale SSH on. Its log is `/var/log/cloud-init-output.log`. Once
 `tofu apply` finishes, only Tailscale's WireGuard port (UDP 41641) is open
 from the internet, and WireGuard never answers anyone it doesn't know.
@@ -193,11 +193,11 @@ still needs some well-formed value: `TF_VAR_tailscale_auth_key=tskey-auth-unused
 them from the repo root:
 
 ```sh
-tailscale ping nym
-scp -r deploy admin@nym:
-ssh admin@nym 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name nym --tag tag:nym'
-make deploy TARGET=admin@nym
-ssh admin@nym sudo byname-verify
+tailscale ping me
+scp -r deploy admin@me:
+ssh admin@me 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name me --tag tag:me'
+make deploy TARGET=admin@me
+ssh admin@me sudo byname-verify
 ```
 
 Then check a household device as in
@@ -253,7 +253,7 @@ Two things need IPv4, which is why `public_domain` requires `ipv4 = true`:
   2026-11-25).
 
 Tailscale devices on IPv4-only networks still reach an IPv6-only server,
-through a Tailscale relay (DERP) instead of directly. `tailscale ping nym`
+through a Tailscale relay (DERP) instead of directly. `tailscale ping me`
 shows `via DERP(...)` for a relayed path and an address for a direct one.
 Changing `ipv4` on Lightsail later replaces the server.
 
@@ -264,11 +264,11 @@ and its full history:
 
 1. **Take a snapshot on the old host** and copy it to your Mac:
    ```sh
-   ssh you@nym 'sudo -u byname /usr/local/lib/byname/current/byname snapshot'     # prints the snapshot's path
-   ssh you@nym 'sudo cat <that path>' > byname-move.db
+   ssh you@me 'sudo -u byname /usr/local/lib/byname/current/byname snapshot'     # prints the snapshot's path
+   ssh you@me 'sudo cat <that path>' > byname-move.db
    ```
-2. **Stop the old host**: `ssh you@nym 'sudo systemctl disable --now byname'`.
-   With Tailscale, also free the name: `ssh you@nym 'sudo tailscale logout'`,
+2. **Stop the old host**: `ssh you@me 'sudo systemctl disable --now byname'`.
+   With Tailscale, also free the name: `ssh you@me 'sudo tailscale logout'`,
    then delete the machine in the Tailscale admin console.
 3. **Create the new host** (above, or the Pi runbook), then bootstrap and
    deploy it. For your own domain, point its DNS at the new server.

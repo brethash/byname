@@ -1,8 +1,8 @@
 # byname — household short links. See README.md and docs/operations.md.
 
 VERSION ?= $(shell git describe --always --dirty --tags 2>/dev/null || echo dev)
-# ssh target for deploy: you@nym (Pi) or admin@nym (cloud). PI= still works.
-PI      ?= nym
+# ssh target for deploy: you@me (Pi) or admin@me (cloud). PI= still works.
+PI      ?= me
 TARGET  ?= $(PI)
 GO      ?= go
 LDFLAGS := -s -w -buildid= -X main.version=$(VERSION)
@@ -15,7 +15,7 @@ help:
 	@echo "make fuzz         run each fuzz target for FUZZTIME (default 30s)"
 	@echo "make run          run locally on http://localhost:8080 (dev mode)"
 	@echo "make build-linux  static Linux binaries in bin/byname-linux-{arm64,amd64}"
-	@echo "make deploy TARGET=you@nym   gate, build, ship to the host, health-check, auto-rollback"
+	@echo "make deploy TARGET=you@me   gate, build, ship to the host, health-check, auto-rollback"
 	@echo "make cloud-check  tofu fmt + validate for deploy/cloud/{aws,hetzner}"
 
 gate: vet lint race vuln shellcheck

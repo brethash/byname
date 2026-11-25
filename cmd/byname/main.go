@@ -1,4 +1,4 @@
-// Command byname is a household short-link service ("nym/wiki") for a Raspberry Pi
+// Command byname is a household short-link service ("me/wiki") for a Raspberry Pi
 // on a tailnet.
 //
 //	byname serve     run the web service
@@ -93,7 +93,7 @@ commands:
   version   print the version
 
 Run "byname <command> -h" for flags. Every flag may also be set as BYNAME_<NAME>
-(upper case, dashes as underscores), e.g. BYNAME_HOSTS=nym,nym.example.ts.net.
+(upper case, dashes as underscores), e.g. BYNAME_HOSTS=me,me.example.ts.net.
 `)
 }
 
@@ -150,7 +150,7 @@ func serve(args []string) error {
 	fs := newFlags("serve")
 	listen := fs.String("listen", ":80", "listen address")
 	dbPath := fs.String("db", defaultDB, "SQLite database path")
-	hosts := fs.String("hosts", "", "comma-separated Host names to answer to; the first is shown in the UI (required, e.g. nym,nym.example.ts.net)")
+	hosts := fs.String("hosts", "", "comma-separated Host names to answer to; the first is shown in the UI (required, e.g. me,me.example.ts.net)")
 	allow := fs.String("allow-cidrs", tailnetNets, "comma-separated peer networks allowed to connect")
 	socket := fs.String("tailscale-socket", whois.DefaultSocket, "tailscaled LocalAPI socket for WhoIs")
 	noWhois := fs.Bool("no-whois", false, "disable Tailscale WhoIs (changes are attributed by IP only)")
@@ -188,7 +188,7 @@ func serve(args []string) error {
 	}
 	hostList := splitList(*hosts)
 	if len(hostList) == 0 {
-		return errors.New("--hosts is required (e.g. --hosts nym,nym.example.ts.net)")
+		return errors.New("--hosts is required (e.g. --hosts me,me.example.ts.net)")
 	}
 	var nets []netip.Prefix
 	for _, c := range splitList(*allow) {

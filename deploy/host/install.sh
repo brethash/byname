@@ -57,7 +57,7 @@ healthy() {
   for _ in $(seq 1 20); do
     # Via localhost (allowed in byname.env), so a deploy doesn't depend on
     # tailscaled being up at that moment. byname-verify tests the tailnet path.
-    body="$(curl -fsS -m 3 -H "Host: ${HOST:-nym}" "http://127.0.0.1/_/healthz" 2>/dev/null || true)"
+    body="$(curl -fsS -m 3 -H "Host: ${HOST:-me}" "http://127.0.0.1/_/healthz" 2>/dev/null || true)"
     if grep -q '"status": "ok"' <<<"$body" && grep -q "\"version\": \"$1\"" <<<"$body"; then
       return 0
     fi

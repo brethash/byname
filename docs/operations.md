@@ -5,10 +5,10 @@ The host is a Raspberry Pi at home (first-time setup below) or a cloud server
 at AWS or Hetzner ([cloud.md](cloud.md)). After setup, both are run the same
 way.
 
-**The service name.** `nym` is the default: people type `nym/wiki`, and the
-host is called `nym`. To use another name (`go`, `links`…), pass
+**The service name.** `me` is the default: people type `me/wiki`, and the
+host is called `me`. To use another name (`go`, `links`…), pass
 `--name <name>` to `bootstrap.sh` (or set `name` in `deploy/cloud`). Then use
-that name wherever these docs say `nym` in a hostname or URL, and
+that name wherever these docs say `me` in a hostname or URL, and
 `tag:<name>` for the Tailscale tag. The program's own files (`byname.service`,
 `/etc/byname`, `byname-verify`) keep their names.
 
@@ -37,15 +37,15 @@ For a cloud server, follow [cloud.md](cloud.md) instead.
 ### 1. Tailscale policy (admin console, before the Pi joins)
 
 Merge [`deploy/tailscale/policy.hujson`](../deploy/tailscale/policy.hujson) into
-your tailnet policy: it defines `tag:nym`, lets household members reach it on
+your tailnet policy: it defines `tag:me`, lets household members reach it on
 port 80, and allows you Tailscale SSH to it. Confirm MagicDNS is on
-(admin console → DNS). Make sure no other device is already named `nym`.
+(admin console → DNS). Make sure no other device is already named `me`.
 
 ### 2. Flash the SD card
 
 Raspberry Pi Imager → **Raspberry Pi OS Lite (64-bit)**. In OS customisation:
 
-- hostname `nym` (or your own service name)
+- hostname `me` (or your own service name)
 - your own username (not `pi`) and password
 - **Services → Enable SSH → Allow public-key authentication only**, paste your key
 - **no** Wi-Fi settings (wired Ethernet only)
@@ -59,14 +59,14 @@ corruption, and `byname-verify` checks for it.
 Boot the Pi on Ethernet and, in your router:
 
 1. **Reserve its DHCP address** so it never changes.
-2. **Make `nym` resolve to that address** for home-network devices. Many
-   routers already register DHCP hostnames, so `nym` (or `nym.<router-domain>`,
-   e.g. `nym.lan`) may work as soon as the Pi has booted. Check from a device
-   with Tailscale off: `nslookup nym`. If it doesn't resolve, add a local DNS /
-   static host entry `nym` → the reserved address. Note your router's local
+2. **Make `me` resolve to that address** for home-network devices. Many
+   routers already register DHCP hostnames, so `me` (or `me.<router-domain>`,
+   e.g. `me.lan`) may work as soon as the Pi has booted. Check from a device
+   with Tailscale off: `nslookup me`. If it doesn't resolve, add a local DNS /
+   static host entry `me` → the reserved address. Note your router's local
    domain (often `lan` or `home`).
 
-Devices running Tailscale keep using MagicDNS for `nym`; this entry is only
+Devices running Tailscale keep using MagicDNS for `me`; this entry is only
 for devices without it.
 
 ### 4. Bootstrap over the LAN
@@ -77,29 +77,29 @@ ssh <you>@<pi-lan-ip> 'sudo ./deploy/host/bootstrap.sh --admin-user <you> --lan-
 ```
 
 Use your real LAN subnet and router domain, and add `--name <name>` if you
-aren't using `nym`. Leave out `--lan-access` to keep
+aren't using `me`. Leave out `--lan-access` to keep
 byname tailnet-only. Running the script again without it turns LAN access off.
 The script refuses to load the firewall if your SSH session comes from
-outside the LAN subnet. It removes `avahi-daemon`, so `nym.local` stops
-resolving. Use the LAN IP or, after the next step, `nym` over Tailscale.
+outside the LAN subnet. It removes `avahi-daemon`, so `me.local` stops
+resolving. Use the LAN IP or, after the next step, `me` over Tailscale.
 
 ### 5. Join the tailnet
 
 ```sh
 ssh <you>@<pi-lan-ip>
-sudo tailscale up --ssh --hostname=nym --advertise-tags=tag:nym   # open the printed URL
+sudo tailscale up --ssh --hostname=me --advertise-tags=tag:me   # open the printed URL
 sudo ./deploy/host/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24 --lan-access --lan-domain lan   # again: fills BYNAME_HOSTS
 sudo reboot                                                       # applies Wi-Fi/BT off
 ```
 
-From now on, `ssh <you>@nym` works from anywhere on the tailnet (Tailscale SSH;
+From now on, `ssh <you>@me` works from anywhere on the tailnet (Tailscale SSH;
 the "check" rule asks you to re-confirm in the browser now and then).
 
 ### 6. Deploy and verify
 
 ```sh
-make deploy TARGET=<you>@nym
-ssh <you>@nym sudo byname-verify
+make deploy TARGET=<you>@me
+ssh <you>@me sudo byname-verify
 ```
 
 `byname-verify` checks the whole baseline: radios off, SSH hardening, updates,
@@ -112,11 +112,11 @@ number of failures.
 
 On each device with Tailscale (app connected, "Use Tailscale DNS" on):
 
-1. open `http://nym/_/whoami`. It should show that person's Tailscale login.
-2. create `nym/test` once, then type `nym/test` in the address bar.
+1. open `http://me/_/whoami`. It should show that person's Tailscale login.
+2. create `me/test` once, then type `me/test` in the address bar.
 
-On a device **without** Tailscale on the home Wi-Fi, `http://nym/_/whoami`
-should say "home network (no Tailscale)", and `nym/test` should open.
+On a device **without** Tailscale on the home Wi-Fi, `http://me/_/whoami`
+should say "home network (no Tailscale)", and `me/test` should open.
 
 Record what happens in [client-setup.md](client-setup.md). If you have a
 guest Wi-Fi, from it `curl -m 5 http://<pi-lan-ip>/` should time out.
@@ -124,7 +124,7 @@ guest Wi-Fi, from it `curl -m 5 http://<pi-lan-ip>/` should time out.
 ## Deploying changes
 
 ```sh
-make deploy TARGET=<you>@nym          # cloud: TARGET=admin@nym
+make deploy TARGET=<you>@me          # cloud: TARGET=admin@me
 ```
 
 This runs the full gate (vet, staticcheck, race tests, govulncheck,
@@ -133,7 +133,7 @@ matches the host, then on the host:
 
 1. verifies the binary's sha256;
 2. snapshots the database **with the current binary** (before any migration);
-3. switches the `current` symlink atomically and restarts `nym`;
+3. switches the `current` symlink atomically and restarts `me`;
 4. polls `/_/healthz` for the new version for 20 s; on failure it switches
    back and restarts the previous version.
 
@@ -199,12 +199,12 @@ From S3 (the host's key cannot read, so fetch from your Mac):
 ```sh
 aws s3 ls s3://$B/byname/
 aws s3 cp s3://$B/byname/byname-20261124T120000.000Z.db.gz .
-scp byname-20261124T120000.000Z.db.gz <you>@nym:
-ssh <you>@nym sudo byname-restore byname-20261124T120000.000Z.db.gz
+scp byname-20261124T120000.000Z.db.gz <you>@me:
+ssh <you>@me sudo byname-restore byname-20261124T120000.000Z.db.gz
 ```
 
 `byname-restore` integrity-checks the file, snapshots the current database first
-(so the restore itself can be undone), swaps the file and restarts `nym`.
+(so the restore itself can be undone), swaps the file and restarts `me`.
 
 ### Restore drill (do this once in M3, then yearly)
 
@@ -219,12 +219,12 @@ bin/byname export --db /tmp/drill.db | head -40     # links are there
 
 | Task | Command |
 |---|---|
-| Logs | `ssh <you>@nym journalctl -u byname -f` (debug detail: `BYNAME_LOG_LEVEL=debug` in `/etc/byname/byname.env`) |
-| Health | `curl http://nym/_/healthz` (version, link count, free disk; under-voltage flags on a Pi) |
-| Who changed what | `http://nym/_/activity`, or a link's page (`nym/name+`) |
+| Logs | `ssh <you>@me journalctl -u byname -f` (debug detail: `BYNAME_LOG_LEVEL=debug` in `/etc/byname/byname.env`) |
+| Health | `curl http://me/_/healthz` (version, link count, free disk; under-voltage flags on a Pi) |
+| Who changed what | `http://me/_/activity`, or a link's page (`me/name+`) |
 | Undo a bad edit | link page → History → "Restore this version" |
-| Export | `http://nym/_/export` or `sudo -u byname /usr/local/lib/byname/current/byname export` |
-| Bulk import | `sudo -u byname /usr/local/lib/byname/current/byname import --hosts nym --dry-run file.json` |
+| Export | `http://me/_/export` or `sudo -u byname /usr/local/lib/byname/current/byname export` |
+| Bulk import | `sudo -u byname /usr/local/lib/byname/current/byname import --hosts me --dry-run file.json` |
 | Change settings | edit `/etc/byname/byname.local.env` (yours; `byname.env` is managed), then `sudo systemctl restart byname` |
 | Turn LAN access on/off | re-run `bootstrap.sh` with or without `--lan-access` |
 | Turn the public address on/off | re-run `bootstrap.sh` with or without `--public` ([public-access.md](public-access.md)) |
@@ -239,14 +239,14 @@ The host reboots at 04:00 when an update needs it.
 
 | Symptom | Likely cause |
 |---|---|
-| Browser searches for `nym/foo` | See [client-setup.md](client-setup.md); type `http://nym/foo` once, or use the keyword shortcut |
+| Browser searches for `me/foo` | See [client-setup.md](client-setup.md); type `http://me/foo` once, or use the keyword shortcut |
 | "byname is not reachable from this network" (403) | The device's address isn't allowed: it's outside the LAN subnet (guest Wi-Fi?) without Tailscale, or LAN access is off and Tailscale is off on that device |
-| `nym` doesn't resolve on a device without Tailscale | Router DNS has no `nym` entry; see step 3. Meanwhile `http://<pi-lan-ip>/` works (bootstrap adds the Pi's LAN address to `BYNAME_HOSTS`); re-run bootstrap if that address changed |
-| "unknown host" (421) | A name other than those in `BYNAME_HOSTS` (e.g. `nym.home` when you passed `--lan-domain lan`); re-run bootstrap with the right `--lan-domain`, or add it via `BYNAME_HOSTS` in `/etc/byname/byname.local.env` |
+| `me` doesn't resolve on a device without Tailscale | Router DNS has no `me` entry; see step 3. Meanwhile `http://<pi-lan-ip>/` works (bootstrap adds the Pi's LAN address to `BYNAME_HOSTS`); re-run bootstrap if that address changed |
+| "unknown host" (421) | A name other than those in `BYNAME_HOSTS` (e.g. `me.home` when you passed `--lan-domain lan`); re-run bootstrap with the right `--lan-domain`, or add it via `BYNAME_HOSTS` in `/etc/byname/byname.local.env` |
 | "cross-origin request blocked" (403) | A page on another site tried to change a link. That's working as designed. If it was you, use the byname UI itself |
 | `/_/whoami` shows no Tailscale user | WhoIs failed; `journalctl -u byname \| grep whois`; check `/var/run/tailscale/tailscaled.sock` exists |
-| Locked out of SSH | Tailscale SSH (`ssh <you>@nym`) bypasses the LAN rule. Otherwise, on a Pi use a keyboard and HDMI, then `sudo systemctl stop byname-firewall`. A cloud server has no console login: build a new one ([cloud.md](cloud.md)) and restore the newest S3 backup (see Restore) |
-| Deploy rolled back | Read the journal lines it printed; `ssh <you>@nym journalctl -u byname -n 50` |
+| Locked out of SSH | Tailscale SSH (`ssh <you>@me`) bypasses the LAN rule. Otherwise, on a Pi use a keyboard and HDMI, then `sudo systemctl stop byname-firewall`. A cloud server has no console login: build a new one ([cloud.md](cloud.md)) and restore the newest S3 backup (see Restore) |
+| Deploy rolled back | Read the journal lines it printed; `ssh <you>@me journalctl -u byname -n 50` |
 
 ## Security model in one paragraph
 

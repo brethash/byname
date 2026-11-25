@@ -3,9 +3,9 @@
 # deploy.sh — ship the byname binary to a host (Pi or cloud server) and switch to
 # it, rolling back automatically if the new version fails its health check.
 #
-#   deploy/deploy.sh <ssh-target> <version>      (normally via: make deploy TARGET=you@nym)
+#   deploy/deploy.sh <ssh-target> <version>      (normally via: make deploy TARGET=you@me)
 #
-# Runs on your Mac. Uses plain ssh, so Tailscale SSH (ssh you@nym) works. Picks
+# Runs on your Mac. Uses plain ssh, so Tailscale SSH (ssh you@me) works. Picks
 # bin/byname-linux-arm64 or bin/byname-linux-amd64 to match the host.
 set -euo pipefail
 

@@ -4,7 +4,7 @@ Scope: the Go service (`cmd/`, `internal/`), the Pi deployment
 (`deploy/`), and the threat model in the plan: a household tailnet, no logins,
 plain HTTP inside WireGuard. Method: OWASP Top 10:2025 checklist, a pattern
 sweep of the code, and attack replays in real headless Chrome against a
-non-localhost origin, which is the condition `http://nym` runs in.
+non-localhost origin, which is the condition `http://me` runs in.
 
 ## Fixed during the review
 
@@ -58,7 +58,7 @@ What it costs:
   signed-in accounts keep their own.
 
 Mitigations worth doing: put IoT devices and guests on an isolated guest
-Wi-Fi/VLAN so they are outside `--lan-subnet`, and check `nym/_/activity` now
+Wi-Fi/VLAN so they are outside `--lan-subnet`, and check `me/_/activity` now
 and then.
 
 ## Cloud hosting (2026-11-24)

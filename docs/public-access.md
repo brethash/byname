@@ -9,7 +9,7 @@ There are two ways to publish it. **Tailscale is optional** for the first.
 
 | | Your own domain (`--public-domain`) | Tailscale Funnel (`--funnel`) |
 |---|---|---|
-| Address | `https://hg.example.com/wiki` | `https://nym.<tailnet>.ts.net/wiki` |
+| Address | `https://hg.example.com/wiki` | `https://me.<tailnet>.ts.net/wiki` |
 | Needs Tailscale | no | yes |
 | Who signs in | everyone using the address | everyone except tailnet devices |
 | Open ports on the server | TCP 80 and 443 (and 22 from your addresses, without Tailscale) | none |
@@ -19,10 +19,10 @@ There are two ways to publish it. **Tailscale is optional** for the first.
 Either way:
 
 - **Tailscale is a bonus.** If the server is on your tailnet, devices running
-  Tailscale can still type the short `nym/wiki`, with no sign-in. On a Pi
+  Tailscale can still type the short `me/wiki`, with no sign-in. On a Pi
   with `--lan-access`, so can home-network devices.
 - **People on the internet see the full address.** They don't have the short
-  `nym/` name (that needs Tailscale), so byname's pages show them links as
+  `me/` name (that needs Tailscale), so byname's pages show them links as
   `hg.example.com/wiki`.
 - **One provider means no button page.** With only one provider configured,
   people go straight to Google or Slack. After signing out, they stay on the
@@ -30,7 +30,7 @@ Either way:
 - **The history records the account.** Changes by people who signed in show
   as, for example, `alice@gmail.com (via Google)`.
 
-`nym` below is the default service name. Use yours if you chose another.
+`me` below is the default service name. Use yours if you chose another.
 
 ## Costs and requirements
 
@@ -64,7 +64,7 @@ Either way:
 In the Tailscale admin console:
 
 1. **DNS → HTTPS Certificates → Enable.** This lets the server get a
-   certificate for `nym.<tailnet>.ts.net`. Certificates are published in
+   certificate for `me.<tailnet>.ts.net`. Certificates are published in
    public Certificate Transparency logs, so the machine name and the tailnet
    name become public. They're public anyway once Funnel is on.
 2. **Access controls**: merge the `tcp:443` grant from
@@ -73,13 +73,13 @@ In the Tailscale admin console:
    this host, and only this host, to use Funnel.
 
 Your public address is `https://` + the machine's full tailnet name, shown in
-the admin console under Machines, for example `https://nym.tail1234.ts.net`.
+the admin console under Machines, for example `https://me.tail1234.ts.net`.
 
 ## 2. Sign-in providers
 
 Set up one or both. Each needs a redirect URL containing your public address.
 Below, `https://<address>` is `https://hg.example.com` or
-`https://nym.<tailnet>.ts.net`.
+`https://me.<tailnet>.ts.net`.
 
 ### Slack
 
@@ -106,9 +106,9 @@ on distribution for the app (**Manage Distribution**).
 ### Google
 
 In the [Google Cloud console](https://console.cloud.google.com/) (any
-project; create one called `nym` if you like):
+project; create one called `me` if you like):
 
-1. **Google Auth Platform → Branding**: app name `nym`, your email as the
+1. **Google Auth Platform → Branding**: app name `me`, your email as the
    support and developer contact.
 2. **Audience**: *External*. While the app is in *Testing*, only the test
    users you add can sign in (up to 100), which suits a household. *In
@@ -175,7 +175,7 @@ DOMAIN` or `--funnel`:
 ssh admin@SERVER 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
   --no-tailscale --ssh-from any --public-domain hg.example.com'
 # or Tailscale Funnel:
-ssh admin@nym 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name nym --funnel'
+ssh admin@me 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name me --funnel'
 
 ssh admin@SERVER sudo byname-verify
 ```

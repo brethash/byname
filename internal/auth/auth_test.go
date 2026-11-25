@@ -66,7 +66,7 @@ func TestGoogleExchange(t *testing.T) {
 	p := newGoogle(t, ts, "alice@gmail.com")
 	ts.body = map[string]any{"id_token": fakeIDToken(googleClaims("n1")), "access_token": "x"}
 
-	c, err := p.Exchange(context.Background(), "code1", "https://nym.example.ts.net/_/auth/google/callback", "verifier1", "n1")
+	c, err := p.Exchange(context.Background(), "code1", "https://me.example.ts.net/_/auth/google/callback", "verifier1", "n1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestGoogleExchange(t *testing.T) {
 	for k, v := range map[string]string{
 		"grant_type": "authorization_code", "code": "code1", "client_id": "gid",
 		"client_secret": "gsecret", "code_verifier": "verifier1",
-		"redirect_uri": "https://nym.example.ts.net/_/auth/google/callback",
+		"redirect_uri": "https://me.example.ts.net/_/auth/google/callback",
 	} {
 		if got := ts.form.Get(k); got != v {
 			t.Errorf("token request %s = %q, want %q", k, got, v)
@@ -202,7 +202,7 @@ func TestSlackExchange(t *testing.T) {
 func TestAuthURL(t *testing.T) {
 	ts := newTokenServer(t)
 	p := newGoogle(t, ts, "example.com")
-	u, err := url.Parse(p.AuthURL("https://nym.example.ts.net/_/auth/google/callback", "st", "no", "ver"))
+	u, err := url.Parse(p.AuthURL("https://me.example.ts.net/_/auth/google/callback", "st", "no", "ver"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -55,7 +56,7 @@ func newHarness(t *testing.T, mod ...func(*Config)) *harness {
 	}
 	t.Cleanup(func() { st.Close() })
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	hosts := []string{"nym", "nym.example.ts.net"}
+	hosts := []string{"me", "me.example.ts.net"}
 	svc := app.New(st, app.Config{SelfHosts: hosts, Logger: quiet})
 	cfg := Config{
 		Hosts:       hosts,
@@ -82,7 +83,7 @@ func host(h string) reqOpt      { return func(r *http.Request) { r.Host = h } }
 func header(k, v string) reqOpt { return func(r *http.Request) { r.Header.Set(k, v) } }
 func formBody() reqOpt          { return header("Content-Type", "application/x-www-form-urlencoded") }
 func jsonBody() reqOpt          { return header("Content-Type", "application/json") }
-func sameOrigin() reqOpt        { return header("Origin", "http://nym") }
+func sameOrigin() reqOpt        { return header("Origin", "http://me") }
 
 func (h *harness) do(method, target string, body string, opts ...reqOpt) *httptest.ResponseRecorder {
 	h.t.Helper()
@@ -90,9 +91,9 @@ func (h *harness) do(method, target string, body string, opts ...reqOpt) *httpte
 	if body != "" {
 		rd = strings.NewReader(body)
 	}
-	r := httptest.NewRequest(method, "http://nym"+target, rd)
+	r := httptest.NewRequest(method, "http://me"+target, rd)
 	r.RemoteAddr = alicePeer
-	r.Host = "nym"
+	r.Host = "me"
 	for _, o := range opts {
 		o(r)
 	}
@@ -184,7 +185,7 @@ func TestPreviewAndNotFound(t *testing.T) {
 
 	w = h.do("GET", "/wik", "")
 	expectStatus(t, w, http.StatusNotFound)
-	if !strings.Contains(w.Body.String(), "Did you mean") || !strings.Contains(w.Body.String(), "nym/wikipedia") {
+	if !strings.Contains(w.Body.String(), "Did you mean") || !strings.Contains(w.Body.String(), "me/wikipedia") {
 		t.Fatal("not-found page has no suggestions")
 	}
 
@@ -208,14 +209,14 @@ func TestOnlyTailnetPeers(t *testing.T) {
 		if w.Code != want {
 			t.Errorf("peer %s: status %d, want %d", addr, w.Code, want)
 		}
-		if want == http.StatusForbidden && !strings.Contains(w.Body.String(), "nym is not reachable") {
+		if want == http.StatusForbidden && !strings.Contains(w.Body.String(), "me is not reachable") {
 			t.Errorf("peer %s: body %q does not name the service", addr, w.Body.String())
 		}
 	}
 }
 
 // The service name is whatever the first host is; nothing in the UI is
-// hard-wired to "nym".
+// hard-wired to "me".
 func TestCustomServiceName(t *testing.T) {
 	h := newHarness(t, func(c *Config) { c.Hosts = []string{"go", "go.example.ts.net"} })
 	h.create("wiki", "https://wiki.example")
@@ -229,11 +230,11 @@ func TestCustomServiceName(t *testing.T) {
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {
 			t.Errorf("GET %s: %d, body lacks %q", path, w.Code, want)
 		}
-		if path != "/_/favicon.svg" && strings.Contains(w.Body.String(), "nym/") {
-			t.Errorf("GET %s still says nym/", path)
+		if path != "/_/favicon.svg" && regexp.MustCompile(`\bme/`).MatchString(w.Body.String()) {
+			t.Errorf("GET %s still says me/", path)
 		}
 	}
-	expectStatus(t, h.do("GET", "/", "", host("nym")), http.StatusMisdirectedRequest)
+	expectStatus(t, h.do("GET", "/", "", host("me")), http.StatusMisdirectedRequest)
 	if w := h.do("GET", "/", "", peer("203.0.113.9:5000"), host("go")); !strings.Contains(w.Body.String(), "go is not reachable") {
 		t.Errorf("403 body = %q", w.Body.String())
 	}
@@ -241,7 +242,7 @@ func TestCustomServiceName(t *testing.T) {
 
 func TestFaviconLabel(t *testing.T) {
 	for display, want := range map[string]string{
-		"nym":    ">nym/<",
+		"me":     ">me/<",
 		"go.lan": ">go/<",
 		"web":    ">web/<",
 		"links":  ">l/<",
@@ -281,16 +282,16 @@ func TestLANAccessWhenConfigured(t *testing.T) {
 func TestHostAllowlist(t *testing.T) {
 	h := newHarness(t)
 	for hst, want := range map[string]int{
-		"nym":                 http.StatusOK,
-		"NYM":                 http.StatusOK,
-		"nym:80":              http.StatusOK,
-		"nym.":                http.StatusOK,
-		"nym.example.ts.net":  http.StatusOK,
-		"nym.example.ts.net.": http.StatusOK,
-		"evil.example":        http.StatusMisdirectedRequest, // DNS rebinding
-		"100.64.0.5":          http.StatusMisdirectedRequest,
-		"nym:8080":            http.StatusMisdirectedRequest,
-		"":                    http.StatusMisdirectedRequest,
+		"me":                 http.StatusOK,
+		"ME":                 http.StatusOK,
+		"me:80":              http.StatusOK,
+		"me.":                http.StatusOK,
+		"me.example.ts.net":  http.StatusOK,
+		"me.example.ts.net.": http.StatusOK,
+		"evil.example":       http.StatusMisdirectedRequest, // DNS rebinding
+		"100.64.0.5":         http.StatusMisdirectedRequest,
+		"me:8080":            http.StatusMisdirectedRequest,
+		"":                   http.StatusMisdirectedRequest,
 	} {
 		if w := h.do("GET", "/", "", host(hst)); w.Code != want {
 			t.Errorf("Host %q: status %d, want %d", hst, w.Code, want)
@@ -304,7 +305,7 @@ func TestCrossOriginWritesBlocked(t *testing.T) {
 	attacks := []reqOpt{
 		header("Origin", "http://evil.example"),
 		header("Origin", "null"),
-		header("Origin", "http://nym.evil.example"),
+		header("Origin", "http://me.evil.example"),
 		header("Sec-Fetch-Site", "cross-site"),
 	}
 	for i, a := range attacks {
@@ -385,7 +386,7 @@ func TestFormValidationErrors(t *testing.T) {
 	h := newHarness(t)
 	for _, c := range []struct{ name, target, want string }{
 		{"x", "javascript:alert(1)", "must start with http"},
-		{"x", "http://nym/x", "points back"},
+		{"x", "http://me/x", "points back"},
 		{"bad name", "https://x.example", "must start with a letter"},
 		{"x", "https://bank.example@evil.example", "user name or password"},
 	} {
@@ -534,7 +535,7 @@ func TestAPI(t *testing.T) {
 	expectStatus(t, w, http.StatusCreated)
 	var got apiLink
 	json.Unmarshal(w.Body.Bytes(), &got)
-	if got.Name != "a" || got.Rev != 1 || got.URL != "http://nym/a" || got.CreatedBy != "alice@example.com (alice-laptop)" {
+	if got.Name != "a" || got.Rev != 1 || got.URL != "http://me/a" || got.CreatedBy != "alice@example.com (alice-laptop)" {
 		t.Fatalf("created = %+v", got)
 	}
 
@@ -585,7 +586,7 @@ func TestKeywordSearch(t *testing.T) {
 	if loc := w.Header().Get("Location"); loc != "https://github.com/octocat/go" {
 		t.Fatalf("keyword → %q", loc)
 	}
-	w = h.do("GET", "/_/go?q="+url.QueryEscape("nym/gh/a b"), "")
+	w = h.do("GET", "/_/go?q="+url.QueryEscape("me/gh/a b"), "")
 	if loc := w.Header().Get("Location"); loc != "https://github.com/a/b" {
 		t.Fatalf("keyword with prefix → %q", loc)
 	}
@@ -622,14 +623,14 @@ func TestMiscEndpoints(t *testing.T) {
 	for path, want := range map[string]string{
 		"/_/static/style.css":   "--accent",
 		"/_/static/app.js":      "data-confirm",
-		"/favicon.ico":          ">nym/</text>",
-		"/_/favicon.svg":        ">nym/</text>",
+		"/favicon.ico":          ">me/</text>",
+		"/_/favicon.svg":        ">me/</text>",
 		"/robots.txt":           "Disallow: /",
-		"/_/opensearch.xml":     "http://nym/_/go?q={searchTerms}",
+		"/_/opensearch.xml":     "http://me/_/go?q={searchTerms}",
 		"/_/export":             `"format": "byname-links"`,
 		"/_/whoami":             "alice@example.com",
 		"/_/activity":           "create",
-		"/_/links?sort=popular": "nym/a",
+		"/_/links?sort=popular": "me/a",
 		"/_/new?name=fresh":     `value="fresh"`,
 	} {
 		w := h.do("GET", path, "")

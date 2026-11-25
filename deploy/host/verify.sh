@@ -20,7 +20,7 @@ FIRST_HOST="$(conf NAME)"
 if [[ -r /etc/byname/byname.env ]]; then
   FIRST_HOST="$(sed -n 's/^BYNAME_HOSTS=\([^,]*\).*/\1/p' /etc/byname/byname.env)"
 fi
-FIRST_HOST="${FIRST_HOST:-nym}"
+FIRST_HOST="${FIRST_HOST:-me}"
 TAG="$(conf TAG)"; TAG="${TAG:-tag:$FIRST_HOST}"
 TAILSCALE="$(conf TAILSCALE)"; TAILSCALE="${TAILSCALE:-1}"
 PUBLIC_DOMAIN="$(conf PUBLIC_DOMAIN)"

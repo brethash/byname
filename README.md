@@ -1,7 +1,7 @@
 # byname
 
-Short links by name, for a household or a small team. Type `nym/wiki` in any
-browser and land on your wiki. Type `nym/gh/octocat` and land on
+Short links by name, for a household or a small team. Type `me/wiki` in any
+browser and land on your wiki. Type `me/gh/octocat` and land on
 `https://github.com/octocat`. Everyone shares one list that anyone allowed in
 can add to, and every change is recorded and can be undone.
 
@@ -15,28 +15,28 @@ People reach byname in up to three ways, and you choose which ones are on.
 | Path | Address people use | Sign-in |
 |---|---|---|
 | **Your own domain** | `https://hg.example.com/wiki`, from any browser anywhere | Slack or Google; only accounts on your allow list |
-| **Your tailnet** (Tailscale) | `nym/wiki` on devices running Tailscale | none: Tailscale identifies each person and device |
-| **Your home network** (Pi only) | `nym/wiki` on home Wi-Fi | none; changes are recorded by IP address |
+| **Your tailnet** (Tailscale) | `me/wiki` on devices running Tailscale | none: Tailscale identifies each person and device |
+| **Your home network** (Pi only) | `me/wiki` on home Wi-Fi | none; changes are recorded by IP address |
 
 Tailscale is optional. With your own domain and Slack sign-in, a server needs
 nothing else.
 
-`nym` is the default prefix people type. Choose your own with one setting:
+`me` is the default prefix people type. Choose your own with one setting:
 `--name hg` makes it `hg/wiki`.
 
 ## Features
 
 **Links**
 
-- `nym/wiki` redirects to the link's destination. Anything after the name is
-  passed on: `nym/wiki/some/page?x=1` goes to the destination with
+- `me/wiki` redirects to the link's destination. Anything after the name is
+  passed on: `me/wiki/some/page?x=1` goes to the destination with
   `/some/page?x=1` appended.
-- Templates: a destination like `https://github.com/{1}` makes `nym/gh/octocat`
+- Templates: a destination like `https://github.com/{1}` makes `me/gh/octocat`
   go to `https://github.com/octocat`. `{1}`…`{9}` and `{*}` are available, and
   a placeholder can never change the host.
-- Names ignore case, dashes and underscores, so `nym/Wiki-Home` and
-  `nym/wikihome` are the same link.
-- `nym/wiki+` shows a link's details and history instead of redirecting.
+- Names ignore case, dashes and underscores, so `me/Wiki-Home` and
+  `me/wikihome` are the same link.
+- `me/wiki+` shows a link's details and history instead of redirecting.
 - A name that doesn't exist yet opens a "create it" form with suggestions.
 - The home page has search, popular links, the newest links and recent
   changes. Browsers can add byname as a search engine.
@@ -93,7 +93,7 @@ Every deployment follows the same five steps.
    `deploy/cloud/aws` (or `hetzner`). For a Pi, flash Raspberry Pi OS Lite.
 2. **Point a name at it.** For your own domain, add an A and an AAAA record
    at your DNS host (`tofu output dns_records` prints them). With Tailscale,
-   the server joins your tailnet as `nym`.
+   the server joins your tailnet as `me`.
 3. **Harden it.** Run `deploy/host/bootstrap.sh` on the server. It sets up a
    default-deny firewall, key-only SSH, automatic updates and the systemd
    sandbox. Flags choose the paths above: `--no-tailscale`,
@@ -130,7 +130,7 @@ Updates are one command: `make deploy TARGET=…` from `master`.
 | [docs/cloud.md](docs/cloud.md) | AWS Lightsail and Hetzner: costs, a step-by-step walkthrough with your own domain, the Tailscale variant, moving between hosts |
 | [docs/public-access.md](docs/public-access.md) | your own domain or Tailscale Funnel; setting up Slack and Google sign-in; managing who can sign in |
 | [docs/operations.md](docs/operations.md) | the Raspberry Pi from scratch, deploys and rollback, S3 backups and restores, troubleshooting |
-| [docs/client-setup.md](docs/client-setup.md) | making `nym/wiki` work in each browser and device |
+| [docs/client-setup.md](docs/client-setup.md) | making `me/wiki` work in each browser and device |
 | [docs/security-review.md](docs/security-review.md) | the security reviews: what was found, what was fixed, which risks are accepted |
 
 ## Security in brief

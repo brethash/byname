@@ -19,7 +19,7 @@ import (
 	"byname/internal/auth"
 )
 
-const publicURL = "https://nym.example.ts.net"
+const publicURL = "https://me.example.ts.net"
 
 // fakeGoogle is a Google token endpoint that returns an ID token for whoever
 // the test says signed in, echoing the nonce from the sign-in request.
@@ -108,7 +108,7 @@ func (h *harness) pub(method, target, body string, opts ...reqOpt) *httptest.Res
 	r := httptest.NewRequest(method, "http://localhost"+target, rd)
 	r.RemoteAddr = "@" // a unix-socket peer
 	r.Host = "localhost"
-	r.Header.Set("X-Forwarded-Host", "nym.example.ts.net")
+	r.Header.Set("X-Forwarded-Host", "me.example.ts.net")
 	r.Header.Set("X-Forwarded-Proto", "https")
 	for _, o := range opts {
 		o(r)
@@ -179,7 +179,7 @@ func TestPublicConfig(t *testing.T) {
 	for name, c := range map[string]Config{
 		"providers without URL": {Providers: []*auth.Provider{p}},
 		"URL without providers": {PublicURL: publicURL},
-		"plain http":            {PublicURL: "http://nym.example.ts.net", Providers: []*auth.Provider{p}},
+		"plain http":            {PublicURL: "http://me.example.ts.net", Providers: []*auth.Provider{p}},
 		"with a path":           {PublicURL: publicURL + "/x", Providers: []*auth.Provider{p}},
 		"provider twice":        {PublicURL: publicURL, Providers: []*auth.Provider{p, p}},
 	} {
@@ -311,14 +311,14 @@ func TestInternetPagesShowThePublicAddress(t *testing.T) {
 	h.create("wiki", "https://wiki.example.com/")
 	sess, _ := signIn(t, h, g, "203.0.113.9", "/")
 	home := h.pub("GET", "/", "", funnel("203.0.113.9"), withCookie(sess)).Body.String()
-	if !strings.Contains(home, "https://nym.example.ts.net/name") || !strings.Contains(home, `class="brand" href="/">nym<span>/</span>`) {
+	if !strings.Contains(home, "https://me.example.ts.net/name") || !strings.Contains(home, `class="brand" href="/">me<span>/</span>`) {
 		t.Errorf("internet home page: %.1500s", home)
 	}
 	if strings.Contains(home, "on any device on the tailnet") {
 		t.Error("internet home page tells people to use the tailnet name")
 	}
 	list := h.pub("GET", "/_/links", "", funnel("203.0.113.9"), withCookie(sess)).Body.String()
-	if !strings.Contains(list, ">nym.example.ts.net/wiki</a>") {
+	if !strings.Contains(list, ">me.example.ts.net/wiki</a>") {
 		t.Errorf("internet link list: %.1500s", list)
 	}
 	// Tailnet devices, through Serve or directly, keep the short name.
@@ -326,7 +326,7 @@ func TestInternetPagesShowThePublicAddress(t *testing.T) {
 		"serve":   h.pub("GET", "/", "", serveFrom("100.64.0.1")),
 		"private": h.do("GET", "/", ""),
 	} {
-		if body := w.Body.String(); !strings.Contains(body, "Type <code>nym/name</code>") || strings.Contains(body, "ts.net/name") {
+		if body := w.Body.String(); !strings.Contains(body, "Type <code>me/name</code>") || strings.Contains(body, "ts.net/name") {
 			t.Errorf("%s home page: %.1500s", name, body)
 		}
 	}

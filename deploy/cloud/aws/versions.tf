@@ -30,7 +30,7 @@ provider "aws" {
 
   default_tags {
     tags = {
-      app     = "nym"
+      app     = "byname"
       service = var.name
     }
   }

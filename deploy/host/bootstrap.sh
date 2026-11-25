@@ -5,8 +5,8 @@
 # Run on the host, as root, from a copy of the repo's deploy/ directory:
 #
 #   Pi:     sudo deploy/host/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24 \
-#                [--name nym] [--lan-access --lan-domain lan]
-#   cloud:  sudo deploy/host/bootstrap.sh --admin-user admin [--name nym]
+#                [--name me] [--lan-access --lan-domain lan]
+#   cloud:  sudo deploy/host/bootstrap.sh --admin-user admin [--name me]
 #   cloud without Tailscale:
 #           sudo deploy/host/bootstrap.sh --admin-user admin --name hg --no-tailscale \
 #                --ssh-from 203.0.113.7/32 --public-domain hg.example.com
@@ -24,7 +24,7 @@ set -euo pipefail
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TAILNET_NETS="100.64.0.0/10 fd7a:115c:a1e0::/48"
 ADMIN_USER=""
-NAME="nym"
+NAME="me"
 TAG=""
 PLATFORM=""
 LAN_SUBNET=""
@@ -46,7 +46,7 @@ usage: sudo bootstrap.sh --admin-user USER [--name NAME] [--platform pi|cloud]
                          [--public-domain DOMAIN | --funnel] [--force-firewall]
 
   --admin-user      the account you log in with (must already have an SSH key)
-  --name            the service name people type, e.g. nym for nym/wiki (default: nym).
+  --name            the service name people type, e.g. me for me/wiki (default: me).
                     Also the machine name and the tailnet (MagicDNS) name.
   --tag             Tailscale tag for this host (default: tag:NAME); your tailnet
                     policy must define it

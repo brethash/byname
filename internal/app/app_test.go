@@ -20,7 +20,7 @@ func newTest(t *testing.T, cfg Config) *Service {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	cfg.SelfHosts = []string{"nym"}
+	cfg.SelfHosts = []string{"me"}
 	cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	return New(st, cfg)
 }
@@ -39,7 +39,7 @@ func TestCreateValidates(t *testing.T) {
 	if !errors.As(err, &fe) || fe.Field != "target" || !errors.Is(err, link.ErrTargetScheme) {
 		t.Fatalf("err = %v", err)
 	}
-	_, err = s.Create(ctx, Input{Name: "loop", Target: "http://nym/loop"}, who)
+	_, err = s.Create(ctx, Input{Name: "loop", Target: "http://me/loop"}, who)
 	if !errors.Is(err, link.ErrTargetSelf) {
 		t.Fatalf("err = %v", err)
 	}

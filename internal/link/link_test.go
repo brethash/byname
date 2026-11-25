@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-var self = []string{"nym", "nym.example.ts.net", "localhost:8080"}
+var self = []string{"me", "me.example.ts.net", "localhost:8080"}
 
 func TestParseName(t *testing.T) {
 	ok := map[string]string{
@@ -94,9 +94,9 @@ func TestValidateTarget(t *testing.T) {
 		"https://-bad-.com/":                           ErrTargetHost,
 		"https://exa_mple.com/":                        ErrTargetHost,
 		"https://example.com:99999/":                   ErrTargetHost,
-		"http://nym/loop":                              ErrTargetSelf,
-		"http://NYM./loop":                             ErrTargetSelf,
-		"https://nym.example.ts.net/x":                 ErrTargetSelf,
+		"http://me/loop":                               ErrTargetSelf,
+		"http://ME./loop":                              ErrTargetSelf,
+		"https://me.example.ts.net/x":                  ErrTargetSelf,
 		"http://localhost:9999/x":                      ErrTargetSelf,
 		"https://{1}/x":                                ErrTargetTemplate,
 		"https://{1}.example.com/x":                    ErrTargetTemplate,
@@ -164,7 +164,7 @@ func TestExpandRejectsBadInput(t *testing.T) {
 func FuzzValidateTarget(f *testing.F) {
 	for _, s := range []string{
 		"https://example.com/a?b#c", "javascript:alert(1)", `https://a\@b`, "https://{1}/",
-		"https://bank.com@evil", "http://nym/x", "https://[::1]:80/", "https://x.com/{*}?q={1}",
+		"https://bank.com@evil", "http://me/x", "https://[::1]:80/", "https://x.com/{*}?q={1}",
 	} {
 		f.Add(s)
 	}

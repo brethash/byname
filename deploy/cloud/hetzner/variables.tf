@@ -6,12 +6,12 @@ variable "hcloud_token" {
 
 variable "name" {
   description = <<-EOT
-    The service name people type, e.g. "nym" for nym/wiki. It becomes the server's hostname, its
+    The service name people type, e.g. "me" for me/wiki. It becomes the server's hostname, its
     tailnet (MagicDNS) name and the Hetzner server name. Nothing else on the tailnet may already
     use it, or Tailscale renames this server to NAME-1.
   EOT
   type        = string
-  default     = "nym"
+  default     = "me"
 
   validation {
     condition     = can(regex("^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$", var.name)) && var.name != "localhost"
@@ -72,7 +72,7 @@ variable "tag" {
 
   validation {
     condition     = var.tag == null || can(regex("^tag:[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.tag))
-    error_message = "tag must look like tag:nym."
+    error_message = "tag must look like tag:me."
   }
 }
 
