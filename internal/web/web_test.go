@@ -204,8 +204,51 @@ func TestOnlyTailnetPeers(t *testing.T) {
 		"[::ffff:192.168.1.20]:5000": http.StatusForbidden,
 		"garbage":                    http.StatusForbidden,
 	} {
-		if w := h.do("GET", "/", "", peer(addr)); w.Code != want {
+		w := h.do("GET", "/", "", peer(addr))
+		if w.Code != want {
 			t.Errorf("peer %s: status %d, want %d", addr, w.Code, want)
+		}
+		if want == http.StatusForbidden && !strings.Contains(w.Body.String(), "ot is not reachable") {
+			t.Errorf("peer %s: body %q does not name the service", addr, w.Body.String())
+		}
+	}
+}
+
+// The service name is whatever the first host is; nothing in the UI is
+// hard-wired to "ot".
+func TestCustomServiceName(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.Hosts = []string{"go", "go.example.ts.net"} })
+	h.create("wiki", "https://wiki.example")
+	for path, want := range map[string]string{
+		"/":                 "go/",
+		"/wiki+":            "go/wiki",
+		"/_/opensearch.xml": "http://go/_/go?q={searchTerms}",
+		"/_/favicon.svg":    ">go/</text>",
+	} {
+		w := h.do("GET", path, "", host("go"))
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {
+			t.Errorf("GET %s: %d, body lacks %q", path, w.Code, want)
+		}
+		if path != "/_/favicon.svg" && strings.Contains(w.Body.String(), "ot/") {
+			t.Errorf("GET %s still says ot/", path)
+		}
+	}
+	expectStatus(t, h.do("GET", "/", "", host("ot")), http.StatusMisdirectedRequest)
+	if w := h.do("GET", "/", "", peer("203.0.113.9:5000"), host("go")); !strings.Contains(w.Body.String(), "go is not reachable") {
+		t.Errorf("403 body = %q", w.Body.String())
+	}
+}
+
+func TestFaviconLabel(t *testing.T) {
+	for display, want := range map[string]string{
+		"ot":     ">ot/<",
+		"go.lan": ">go/<",
+		"web":    ">web/<",
+		"links":  ">l/<",
+		"a&b":    ">a&amp;b/<",
+	} {
+		if got := string(faviconSVG(display)); !strings.Contains(got, want) {
+			t.Errorf("faviconSVG(%q) = %s, want it to contain %s", display, got, want)
 		}
 	}
 }
@@ -553,7 +596,8 @@ func TestMiscEndpoints(t *testing.T) {
 	for path, want := range map[string]string{
 		"/_/static/style.css":   "--accent",
 		"/_/static/app.js":      "data-confirm",
-		"/favicon.ico":          "<svg",
+		"/favicon.ico":          ">ot/</text>",
+		"/_/favicon.svg":        ">ot/</text>",
 		"/robots.txt":           "Disallow: /",
 		"/_/opensearch.xml":     "http://ot/_/go?q={searchTerms}",
 		"/_/export":             `"format": "ot-links"`,

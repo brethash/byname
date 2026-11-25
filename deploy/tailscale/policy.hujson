@@ -1,6 +1,10 @@
 // Tailscale policy additions for ot. Merge these into your tailnet policy
-// file (admin console → Access controls). Replace <you@example.com> and
-// <admin> (the Pi's admin user name).
+// file (admin console → Access controls). Replace:
+//   tag:ot             tag:<name> if you chose another service name
+//                      (bootstrap.sh --name, or `name` in deploy/cloud)
+//   <you@example.com>  your Tailscale login
+//   <admin>            the host's admin user: your own user on a Pi,
+//                      "admin" on a cloud server
 //
 // NOTE: these grants only restrict anything once the default allow-all rule
 // is removed from your policy, which affects your whole tailnet. Keeping
@@ -16,7 +20,7 @@
   ],
 
   "ssh": [
-    // Tailscale SSH to the Pi for you only, with periodic browser re-check.
+    // Tailscale SSH to the host for you only, with periodic browser re-check.
     {
       "action": "check",
       "src":    ["<you@example.com>"],

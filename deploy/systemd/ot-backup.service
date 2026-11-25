@@ -17,6 +17,8 @@ EnvironmentFile=/etc/ot/ot-backup.env
 LoadCredential=aws:/etc/credstore/ot-backup-aws
 Environment=AWS_SHARED_CREDENTIALS_FILE=%d/aws
 Environment=AWS_EC2_METADATA_DISABLED=true
+# Dual-stack S3 endpoints, so IPv6-only cloud servers can reach S3 too.
+Environment=AWS_USE_DUALSTACK_ENDPOINT=true
 ExecStart=/usr/local/lib/ot/current/ot backup --snapshot-dir /var/lib/ot/snapshots --state-file /var/lib/ot-backup/last-upload
 StateDirectory=ot-backup
 StateDirectoryMode=0700

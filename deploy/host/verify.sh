@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2015 # pass/warn/fail always succeed, so `test && pass || fail` is safe here.
-# ot-verify — check the Pi matches the ot security baseline (milestone M0).
-# Run on the Pi: sudo ot-verify
+# ot-verify — check this host matches the ot security baseline (milestone M0).
+# Run on the host (Pi or cloud server): sudo ot-verify
 # Exit status is the number of failed checks (0 = all good).
 set -uo pipefail
 
@@ -13,23 +13,32 @@ section() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 [[ $EUID -eq 0 ]] || { echo "run as root: sudo ot-verify" >&2; exit 1; }
 
-FIRST_HOST="ot"
+# What bootstrap.sh recorded about this host. Parsed, not sourced.
+conf() { sed -n "s/^$1=//p" /etc/ot/host.conf 2>/dev/null | head -1; }
+PLATFORM="$(conf PLATFORM)"; PLATFORM="${PLATFORM:-pi}"
+FIRST_HOST="$(conf NAME)"
 if [[ -r /etc/ot/ot.env ]]; then
   FIRST_HOST="$(sed -n 's/^OT_HOSTS=\([^,]*\).*/\1/p' /etc/ot/ot.env)"
 fi
+FIRST_HOST="${FIRST_HOST:-ot}"
+TAG="$(conf TAG)"; TAG="${TAG:-tag:$FIRST_HOST}"
 
-section "Platform"
-[[ "$(uname -m)" == "aarch64" ]] && pass "64-bit kernel ($(uname -r))" || fail "not aarch64: $(uname -m)"
-if [[ -e /sys/class/net/wlan0 ]]; then fail "wlan0 present (Wi-Fi not disabled; reboot after bootstrap?)"; else pass "Wi-Fi disabled"; fi
-if [[ -n "$(ls -A /sys/class/bluetooth 2>/dev/null)" ]]; then fail "Bluetooth adapter present"; else pass "Bluetooth disabled"; fi
-if [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" == "yes" ]]; then pass "clock synchronised"; else fail "clock not NTP-synchronised (no RTC on the Pi)"; fi
-throttled="$(cat /sys/devices/platform/soc/soc:firmware/get_throttled 2>/dev/null || echo)"
-if [[ -n "$throttled" ]]; then
-  v=$((16#${throttled#0x}))
-  if (( v & 0x1 )); then fail "under-voltage NOW (use the official 5.1 V / 2.5 A supply)"
-  elif (( v & 0x10000 )); then warn "under-voltage occurred since boot (0x$throttled)"
-  else pass "power OK (get_throttled=0x$throttled)"; fi
+section "Platform ($PLATFORM)"
+if [[ "$PLATFORM" == pi ]]; then
+  [[ "$(uname -m)" == "aarch64" ]] && pass "64-bit kernel ($(uname -r))" || fail "not aarch64: $(uname -m)"
+  if [[ -e /sys/class/net/wlan0 ]]; then fail "wlan0 present (Wi-Fi not disabled; reboot after bootstrap?)"; else pass "Wi-Fi disabled"; fi
+  if [[ -n "$(ls -A /sys/class/bluetooth 2>/dev/null)" ]]; then fail "Bluetooth adapter present"; else pass "Bluetooth disabled"; fi
+  throttled="$(cat /sys/devices/platform/soc/soc:firmware/get_throttled 2>/dev/null || echo)"
+  if [[ -n "$throttled" ]]; then
+    v=$((16#${throttled#0x}))
+    if (( v & 0x1 )); then fail "under-voltage NOW (use the official 5.1 V / 2.5 A supply)"
+    elif (( v & 0x10000 )); then warn "under-voltage occurred since boot (0x$throttled)"
+    else pass "power OK (get_throttled=0x$throttled)"; fi
+  fi
+else
+  pass "$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | tr -d '"') on $(uname -m), $(awk '/^MemTotal:/ {printf "%d MB RAM", $2/1024}' /proc/meminfo)"
 fi
+if [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" == "yes" ]]; then pass "clock synchronised"; else fail "clock not NTP-synchronised"; fi
 
 section "SSH"
 sshcfg="$(sshd -T 2>/dev/null)"
@@ -39,12 +48,24 @@ done
 
 section "Updates and storage"
 if apt-config dump 2>/dev/null | grep -q 'APT::Periodic::Unattended-Upgrade "1"'; then pass "unattended-upgrades enabled"; else fail "unattended-upgrades not enabled"; fi
-for origin in "Raspberry Pi Foundation" "Tailscale"; do
-  if apt-cache policy 2>/dev/null | grep -q "o=$origin"; then pass "apt origin '$origin' present (matches upgrade pattern)"; else warn "apt origin '$origin' not seen; check 52ot-unattended-upgrades patterns against 'apt-cache policy'"; fi
+origins=("Debian" "Tailscale")
+[[ "$PLATFORM" == pi ]] && origins+=("Raspberry Pi Foundation")
+for origin in "${origins[@]}"; do
+  if apt-cache policy 2>/dev/null | grep -q "o=$origin,"; then pass "apt origin '$origin' present (matches upgrade pattern)"; else warn "apt origin '$origin' not seen; check 52ot-unattended-upgrades patterns against 'apt-cache policy'"; fi
 done
-if systemd-analyze cat-config systemd/journald.conf 2>/dev/null | grep -q '^Storage=volatile'; then pass "journal in RAM"; else fail "journald not volatile"; fi
-if swapon --show=TYPE --noheadings 2>/dev/null | grep -qx file; then warn "file-backed swap active (SD wear)"; else pass "no file-backed swap"; fi
-findmnt -no OPTIONS / | grep -qw noatime && pass "root mounted noatime" || warn "root not mounted noatime"
+journal="$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null)"
+if [[ "$PLATFORM" == pi ]]; then
+  grep -q '^Storage=volatile' <<<"$journal" && pass "journal in RAM" || fail "journald not volatile"
+  if swapon --show=TYPE --noheadings 2>/dev/null | grep -qx file; then warn "file-backed swap active (SD wear)"; else pass "no file-backed swap"; fi
+  findmnt -no OPTIONS / | grep -qw noatime && pass "root mounted noatime" || warn "root not mounted noatime"
+else
+  grep -q '^SystemMaxUse=' <<<"$journal" && pass "journal size capped" || warn "journal size not capped"
+  if [[ -n "$(swapon --show --noheadings 2>/dev/null)" ]] || awk '/^MemTotal:/ {exit !($2 >= 1500000)}' /proc/meminfo; then
+    pass "memory headroom (swap or ≥ 1.5 GB RAM)"
+  else
+    warn "no swap on a small server; re-run bootstrap.sh"
+  fi
+fi
 
 section "Firewall"
 if nft list table inet ot_filter >/dev/null 2>&1; then pass "table inet ot_filter loaded"; else fail "ot firewall not loaded (systemctl status ot-firewall)"; fi
@@ -55,10 +76,14 @@ LAN_MODE=off
 [[ -f /etc/systemd/system/ot.service.d/10-lan-access.conf ]] && LAN_MODE=on
 lan_nft=off; nft list chain inet ot_filter input 2>/dev/null | grep -q 'ip saddr .* tcp dport 80 accept' && lan_nft=on
 lan_env=off; grep '^OT_ALLOW_CIDRS=' /etc/ot/ot.env 2>/dev/null | sed 's/^OT_ALLOW_CIDRS=//' | tr ',' '\n' | grep -vE '^(100\.64\.0\.0/10|fd7a:115c:a1e0::/48|127\.0\.0\.1/32|::1/128)$' | grep -q . && lan_env=on
-if [[ "$LAN_MODE" == "$lan_nft" && "$LAN_MODE" == "$lan_env" ]]; then
-  pass "LAN access $LAN_MODE (firewall, systemd and app agree)"
-else
+if ! [[ "$LAN_MODE" == "$lan_nft" && "$LAN_MODE" == "$lan_env" ]]; then
   fail "LAN access inconsistent: systemd drop-in=$LAN_MODE firewall=$lan_nft OT_ALLOW_CIDRS=$lan_env; re-run bootstrap.sh"
+elif [[ "$PLATFORM" == cloud && "$LAN_MODE" == on ]]; then
+  fail "LAN access is on, on a cloud server (that would be the provider's network); re-run bootstrap.sh"
+elif [[ "$PLATFORM" == cloud ]]; then
+  pass "tailnet only (firewall, systemd and app agree)"
+else
+  pass "LAN access $LAN_MODE (firewall, systemd and app agree)"
 fi
 echo "       listening sockets:"
 ss -Hltnu | awk '{printf "         %-5s %s\n", $1, $5}'
@@ -76,9 +101,9 @@ print((s.get("TailscaleIPs") or ["?"])[0])
 print(d.get("MagicDNSSuffix", ""))
 ' <<<"$ts_json")"
 mapfile -t ts <<<"$ts_check"
-[[ "${ts[0]}" == "Running" ]] && pass "tailscaled running" || fail "tailscale state: ${ts[0]} (run: sudo tailscale up --ssh --hostname=ot --advertise-tags=tag:ot)"
-[[ "${ts[1],,}" == "${FIRST_HOST,,}" ]] && pass "tailnet hostname ${ts[1]}" || fail "tailnet hostname is '${ts[1]}', expected '$FIRST_HOST'"
-[[ ",${ts[2]}," == *",tag:ot,"* ]] && pass "node tagged tag:ot (no key expiry)" || warn "node not tagged tag:ot (tags: '${ts[2]}'); its key will expire"
+[[ "${ts[0]}" == "Running" ]] && pass "tailscaled running" || fail "tailscale state: ${ts[0]} (run: sudo tailscale up --ssh --hostname=$FIRST_HOST --advertise-tags=$TAG)"
+[[ "${ts[1],,}" == "${FIRST_HOST,,}" ]] && pass "tailnet hostname ${ts[1]}" || fail "tailnet hostname is '${ts[1]}', expected '$FIRST_HOST' (is another device already named $FIRST_HOST?)"
+[[ ",${ts[2]}," == *",$TAG,"* ]] && pass "node tagged $TAG (no key expiry)" || warn "node not tagged $TAG (tags: '${ts[2]}'); its key will expire"
 TS_IP="${ts[3]}"
 if tailscale debug prefs 2>/dev/null | grep -q '"RunSSH": true'; then pass "Tailscale SSH enabled"; else warn "Tailscale SSH off (tailscale set --ssh)"; fi
 if grep -q "${ts[4]:-no-suffix}" /etc/ot/ot.env 2>/dev/null; then pass "OT_HOSTS includes the tailnet FQDN"; else warn "OT_HOSTS lacks $FIRST_HOST.${ts[4]} (re-run bootstrap.sh)"; fi
@@ -96,7 +121,6 @@ if [[ "$TS_IP" != "?" ]]; then
   code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H 'Host: evil.example' "http://$TS_IP/")"
   [[ "$code" == "421" ]] && pass "foreign Host header refused (421)" || fail "foreign Host header got $code, want 421"
 fi
-lan_ip="$(ip -4 -o addr show scope global | awk '$2 != "tailscale0" {print $4}' | cut -d/ -f1 | head -1)"
 
 section "Backups"
 if systemctl is-enabled --quiet ot-backup.timer 2>/dev/null; then
@@ -114,18 +138,31 @@ cat <<EOF
   * From each household device (Tailscale on): open  http://$FIRST_HOST/_/whoami
     and type  $FIRST_HOST/test  in the address bar. Record results in docs/client-setup.md.
 EOF
-if [[ "$LAN_MODE" == on ]]; then
+if [[ "$PLATFORM" == cloud ]]; then
+  pub6="$(ip -6 -o addr show scope global | awk '$2 != "tailscale0" {print $4}' | cut -d/ -f1 | head -1)"
+  pub4="$(ip -4 -o addr show scope global | awk '$2 != "tailscale0" {print $4}' | cut -d/ -f1 | head -1)"
   cat <<EOF
+  * From the internet (Tailscale OFF), these must time out, not be refused:
+        curl -m 5 'http://[${pub6:-<public-ipv6>}]/'      nc -vz -w 5 ${pub6:-<public-ipv6>} 22
+EOF
+  if [[ -n "$pub4" ]]; then
+    echo "        curl -m 5 http://$pub4/   (private address $pub4; check the provider's public IPv4 too)"
+  fi
+else
+  lan_ip="$(ip -4 -o addr show scope global | awk '$2 != "tailscale0" {print $4}' | cut -d/ -f1 | head -1)"
+  if [[ "$LAN_MODE" == on ]]; then
+    cat <<EOF
   * LAN access is ON. From a device on home Wi-Fi with Tailscale OFF, both should work:
         nslookup $FIRST_HOST          (router DNS must answer ${lan_ip:-<pi-lan-ip>})
         curl -m 5 http://$FIRST_HOST/_/healthz
     If you have a guest Wi-Fi, from it this should time out:  curl -m 5 http://${lan_ip:-<pi-lan-ip>}/
 EOF
-else
-  cat <<EOF
+  else
+    cat <<EOF
   * LAN access is OFF. From a LAN device with Tailscale OFF, this must time out:
         curl -m 5 http://${lan_ip:-<pi-lan-ip>}/
 EOF
+  fi
 fi
 
 echo

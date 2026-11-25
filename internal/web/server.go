@@ -7,6 +7,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"html"
 	"html/template"
 	"io/fs"
 	"log/slog"
@@ -53,6 +54,7 @@ type Server struct {
 	log     *slog.Logger
 	hosts   map[string]bool
 	display string
+	favicon []byte
 	pages   map[string]*template.Template
 	static  fs.FS
 	writes  *limiterSet
@@ -93,6 +95,7 @@ func New(cfg Config, svc *app.Service, who whois.Resolver) (*Server, error) {
 		writes:  newLimiterSet(cfg.WriteRate, cfg.WriteBurst, cfg.WriteDaily),
 		started: time.Now(),
 	}
+	s.favicon = faviconSVG(s.display)
 	for _, h := range cfg.Hosts {
 		s.hosts[normalizeHost(h)] = true
 	}
@@ -121,7 +124,8 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /{$}", s.home)
 	mux.HandleFunc("GET /{path...}", s.follow)
-	mux.HandleFunc("GET /favicon.ico", s.favicon)
+	mux.HandleFunc("GET /favicon.ico", s.serveFavicon)
+	mux.HandleFunc("GET /_/favicon.svg", s.serveFavicon)
 	mux.HandleFunc("GET /robots.txt", robots)
 
 	mux.Handle("GET /_/static/", http.StripPrefix("/_/static/", s.staticHandler()))
@@ -180,15 +184,33 @@ func (s *Server) staticHandler() http.Handler {
 	})
 }
 
-func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
-	b, err := fs.ReadFile(s.static, "favicon.svg")
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
+func (s *Server) serveFavicon(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "image/svg+xml")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	w.Write(b)
+	w.Write(s.favicon)
+}
+
+// faviconSVG draws the service name as the browser-tab icon: the whole name
+// when it is short ("ot/", "go/"), otherwise its first letter ("l/" for
+// "links"). Only the first DNS label is used, so "ot.lan" draws "ot/".
+func faviconSVG(display string) []byte {
+	name, _, _ := strings.Cut(display, ".")
+	if utf8.RuneCountInString(name) > 3 {
+		r, _ := utf8.DecodeRuneInString(name)
+		name = string(r)
+	}
+	label := name + "/"
+	size := 26
+	switch utf8.RuneCountInString(label) {
+	case 1, 2:
+		size = 34
+	case 4:
+		size = 20
+	}
+	return fmt.Appendf(nil, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">`+
+		`<rect width="64" height="64" rx="14" fill="#0f6e6e"/>`+
+		`<text x="32" y="%d" font-family="Menlo,Consolas,monospace" font-size="%d" font-weight="700" text-anchor="middle" fill="#fff">%s</text></svg>`,
+		32+size*35/100, size, html.EscapeString(label))
 }
 
 func robots(w http.ResponseWriter, _ *http.Request) {

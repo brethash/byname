@@ -56,6 +56,51 @@ Mitigations worth doing: put IoT devices and guests on an isolated guest
 Wi-Fi/VLAN so they are outside `--lan-subnet`, and check `ot/_/activity` now
 and then.
 
+## Cloud hosting (2026-11-24)
+
+ot can now run on an AWS Lightsail or Hetzner Cloud server
+([cloud.md](cloud.md)). The app and its request checks are unchanged. What
+changes is where it runs and who else can reach the machine.
+
+**Exposure.** No TCP port is public. The provider's firewall (Lightsail
+public ports, a Hetzner firewall) and nftables each allow only UDP 41641 in
+from the internet. That is Tailscale's WireGuard port, which never answers a
+packet from an unknown peer. Port 80 (ot) and port 22 (OpenSSH, as a fallback
+to Tailscale SSH) are accepted only on `tailscale0`. The app's source check
+and systemd's `IPAddressAllow` are the same as on the Pi. LAN access can't be
+turned on: `bootstrap.sh` refuses it on a cloud server and `ot-verify` fails
+if it finds it. Servers are IPv6-only by default, so there is no IPv4
+address to scan.
+
+| New risk | Handling |
+|---|---|
+| The provider runs the hypervisor and the disk, so it can read the links | Accepted: household links, and the same is true of S3 backups. |
+| Someone who takes over your AWS or Hetzner account takes over the server | Use MFA on both accounts. Pass the Hetzner token as `TF_VAR_hcloud_token`, never in a file, and revoke it when you're done. |
+| The Tailscale auth key sits in the server's user data and in local OpenTofu state | The key is one-off, pre-approved and tagged, so first boot spends it. It is still readable afterwards through the provider's metadata service and in the state file, but it's useless by then. `first-boot.sh` hands it to `tailscale up` from a 0600 file on tmpfs, never on a command line. The key must not be reusable. |
+| No console login for break-glass access | Accepted. The admin account is key-only with passwordless sudo and is reachable only over the tailnet. If the server becomes unreachable, build a new one and restore the newest S3 backup, which loses at most the last hour of changes. |
+| The backup key now lives on a provider's machine | Unchanged: it can only `PutObject`, and bucket versioning keeps every earlier object. The unit uses S3's dual-stack endpoints. |
+| Clients on IPv4-only networks are relayed through Tailscale's DERP servers | WireGuard encrypts end to end, so a relay sees only ciphertext and timing. |
+| OpenTofu providers and cloud images | Provider versions and hashes are pinned in the committed `.terraform.lock.hcl`. Images are the providers' official Debian 13 images. Tailscale comes from its signed apt repository, as on the Pi. |
+
+**Verified so far:**
+
+- `tofu validate` passes for both stacks.
+- A read-only `tofu plan` against AWS shows three resources: the key pair, a
+  `nano_ipv6_3_0` IPv6-only instance, and public ports with UDP 41641 only.
+- The Hetzner server-type selection was tested on sample data.
+- The user data renders to valid POSIX sh and carries `first-boot.sh`
+  unchanged.
+- shellcheck passes on every script.
+
+**Not verified yet:** a real first boot on either provider, which would
+exercise cloud-init and the Tailscale join with IPv6 only. On the server,
+`ot-verify` checks the rest.
+
+**Custom service name.** `bootstrap.sh` and OpenTofu both require the name
+to be a DNS label starting with a letter. It becomes the first `OT_HOSTS`
+entry, so the Host allowlist works as before. The generated favicon escapes
+it. No new risk.
+
 ## Accepted risks
 
 1. **A household member can change any link on purpose.** That is the

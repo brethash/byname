@@ -1,0 +1,5 @@
+# Copy to terraform.tfvars (gitignored). Pass secrets as environment
+# variables instead: TF_VAR_hcloud_token, TF_VAR_tailscale_auth_key.
+name           = "ot"
+location       = "hel1" # cheapest; ash or hil for US latency (€17.99)
+ssh_public_key = "ssh-ed25519 AAAA... you@laptop"

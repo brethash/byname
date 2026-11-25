@@ -1,8 +1,12 @@
 # ot/
 
-Household short links (`ot/wiki`, `ot/gh/otterly`) served from a Raspberry
-Pi 3B to every device on your tailnet, at home or away, and optionally to
-devices on the home network that don't run Tailscale.
+Household short links (`ot/wiki`, `ot/gh/otterly`) for every device on your
+tailnet, at home or away. They're served from a Raspberry Pi 3B at home (which
+can also serve home-network devices that don't run Tailscale) or from a
+$3.50/month cloud server.
+
+`ot` is the default name. Choose your own (`go/wiki`, `links/wiki`) with one
+setting: `bootstrap.sh --name go`, or `name = "go"` in `deploy/cloud`.
 
 - **Tailnet first, LAN optional.** Tailscale MagicDNS resolves `ot` on every
   device running Tailscale, and WireGuard encrypts that traffic. With
@@ -12,7 +16,7 @@ devices on the home network that don't run Tailscale.
   a link. Every change records who made it (Tailscale WhoIs), and any earlier
   version can be restored with one click.
 - **Small and boring to run.** One static Go binary, SQLite, about 30 MB of RAM,
-  near-zero SD card writes when idle, automatic OS updates, and hourly
+  near-zero disk writes when idle, automatic OS updates, and hourly
   snapshots to S3.
 
 ## Using it
@@ -46,16 +50,26 @@ internal/app/      validation, click batching, snapshot scheduling
 internal/web/      middleware, handlers, templates, JSON API
 internal/whois/    tailscaled LocalAPI WhoIs client
 internal/backup/   S3 upload of the newest snapshot
-deploy/            Pi bootstrap, systemd units, firewall, deploy/verify/restore scripts
+deploy/host/       bootstrap (Pi or cloud), firewall, install/verify/restore scripts
+deploy/systemd/    units
+deploy/cloud/      OpenTofu for AWS Lightsail and Hetzner, plus the first-boot script
 ```
 
-## Running it on the Pi
+## Where to run it
 
-[docs/operations.md](docs/operations.md) covers first-time setup, deploys with
-automatic rollback, S3 backups and restores, and troubleshooting.
+| Host | Cost per month | Who can use it |
+|---|---|---|
+| Raspberry Pi at home | about $0.30 of electricity | tailnet devices, and optionally home-network devices without Tailscale |
+| AWS Lightsail, IPv6-only ([docs/cloud.md](docs/cloud.md)) | $3.50 | tailnet devices |
+| Hetzner Cloud, cheapest type in stock ([docs/cloud.md](docs/cloud.md)) | €5.99–€17.99 | tailnet devices |
+
+Prices as of 2026-11-24. [docs/operations.md](docs/operations.md) covers Pi
+setup, deploys with automatic rollback, S3 backups and restores, and
+troubleshooting. [docs/cloud.md](docs/cloud.md) covers the cloud servers and
+moving between hosts.
 
 ```sh
-make deploy PI=<you>@ot
+make deploy TARGET=<you>@ot      # builds arm64 + amd64, ships the one the host needs
 ```
 
 ## Security
@@ -75,10 +89,11 @@ host. Redirects are always `302` with `no-store`, so edits take effect
 immediately. The JSON API requires `application/json`, so browsers must send
 a CORS preflight, which is never granted.
 
-On the Pi, the service runs under a tight systemd sandbox: read-only system,
-syscall filter, only `CAP_NET_BIND_SERVICE`, and only tailnet peers allowed.
-It sits behind a default-drop firewall. The AWS key exists only in the backup
-unit and can only add objects.
+On the host, the service runs under a tight systemd sandbox: read-only
+system, syscall filter, only `CAP_NET_BIND_SERVICE`, and only tailnet peers
+allowed. It sits behind a default-drop firewall; cloud servers also sit
+behind the provider's firewall, with no public port except Tailscale's. The
+AWS key exists only in the backup unit and can only add objects.
 
 The OWASP review, including what it fixed and the risks accepted, is in
 [docs/security-review.md](docs/security-review.md).

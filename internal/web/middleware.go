@@ -110,7 +110,7 @@ func (s *Server) sourceCheck(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip, ok := peerIP(r)
 		if !ok || !s.allowedIP(ip) {
-			http.Error(w, "ot is not reachable from this network", http.StatusForbidden)
+			http.Error(w, s.display+" is not reachable from this network", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)

@@ -1,8 +1,18 @@
-# Operating ot on the Raspberry Pi
+# Operating ot
 
-Everything here runs from the repo on your Mac unless it says "on the Pi".
+Everything here runs from the repo on your Mac unless it says "on the host".
+The host is a Raspberry Pi at home (first-time setup below) or a cloud server
+at AWS or Hetzner ([cloud.md](cloud.md)). After setup, both are run the same
+way.
 
-## What lives where on the Pi
+**The service name.** `ot` is the default: people type `ot/wiki`, and the
+host is called `ot`. To use another name (`go`, `links`…), pass
+`--name <name>` to `bootstrap.sh` (or set `name` in `deploy/cloud`). Then use
+that name wherever these docs say `ot` in a hostname or URL, and
+`tag:<name>` for the Tailscale tag. The program's own files (`ot.service`,
+`/etc/ot`, `ot-verify`) keep their names.
+
+## What lives where on the host
 
 | Path | What |
 |---|---|
@@ -10,6 +20,7 @@ Everything here runs from the repo on your Mac unless it says "on the Pi".
 | `/usr/local/lib/ot/current` | symlink to the live version |
 | `/etc/ot/ot.env` | `ot serve` settings (`OT_HOSTS`, …), rewritten by `bootstrap.sh` |
 | `/etc/ot/ot.local.env` | your own `OT_*` overrides (kept across bootstrap runs) |
+| `/etc/ot/host.conf` | platform (`pi`/`cloud`), name and tag, for `ot-verify` |
 | `/etc/systemd/system/ot.service.d/10-lan-access.conf` | present only with `--lan-access` |
 | `/etc/ot/firewall.nft` | nftables table `inet ot_filter` |
 | `/etc/ot/ot-backup.env` | backup bucket/region (optional) |
@@ -19,7 +30,9 @@ Everything here runs from the repo on your Mac unless it says "on the Pi".
 | `/usr/local/sbin/ot-verify`, `ot-restore` | checks and restore helper |
 | units | `ot.service`, `ot-firewall.service`, `ot-backup.service` + `.timer` |
 
-## First-time setup (milestone M0)
+## First-time setup on a Raspberry Pi (milestone M0)
+
+For a cloud server, follow [cloud.md](cloud.md) instead.
 
 ### 1. Tailscale policy (admin console, before the Pi joins)
 
@@ -32,7 +45,7 @@ port 80, and allows you Tailscale SSH to it. Confirm MagicDNS is on
 
 Raspberry Pi Imager → **Raspberry Pi OS Lite (64-bit)**. In OS customisation:
 
-- hostname `ot`
+- hostname `ot` (or your own service name)
 - your own username (not `pi`) and password
 - **Services → Enable SSH → Allow public-key authentication only**, paste your key
 - **no** Wi-Fi settings (wired Ethernet only)
@@ -60,10 +73,11 @@ for devices without it.
 
 ```sh
 scp -r deploy <you>@<pi-lan-ip>:
-ssh <you>@<pi-lan-ip> 'sudo ./deploy/pi/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24 --lan-access --lan-domain lan'
+ssh <you>@<pi-lan-ip> 'sudo ./deploy/host/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24 --lan-access --lan-domain lan'
 ```
 
-Use your real LAN subnet and router domain. Leave out `--lan-access` to keep
+Use your real LAN subnet and router domain, and add `--name <name>` if you
+aren't using `ot`. Leave out `--lan-access` to keep
 ot tailnet-only. Running the script again without it turns LAN access off.
 The script refuses to load the firewall if your SSH session comes from
 outside the LAN subnet. It removes `avahi-daemon`, so `ot.local` stops
@@ -74,7 +88,7 @@ resolving. Use the LAN IP or, after the next step, `ot` over Tailscale.
 ```sh
 ssh <you>@<pi-lan-ip>
 sudo tailscale up --ssh --hostname=ot --advertise-tags=tag:ot   # open the printed URL
-sudo ./deploy/pi/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24 --lan-access --lan-domain lan   # again: fills OT_HOSTS
+sudo ./deploy/host/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24 --lan-access --lan-domain lan   # again: fills OT_HOSTS
 sudo reboot                                                       # applies Wi-Fi/BT off
 ```
 
@@ -84,7 +98,7 @@ the "check" rule asks you to re-confirm in the browser now and then).
 ### 6. Deploy and verify
 
 ```sh
-make deploy PI=<you>@ot
+make deploy TARGET=<you>@ot
 ssh <you>@ot sudo ot-verify
 ```
 
@@ -110,11 +124,12 @@ guest Wi-Fi, from it `curl -m 5 http://<pi-lan-ip>/` should time out.
 ## Deploying changes
 
 ```sh
-make deploy PI=<you>@ot
+make deploy TARGET=<you>@ot          # cloud: TARGET=admin@ot
 ```
 
 This runs the full gate (vet, staticcheck, race tests, govulncheck,
-shellcheck), builds a static arm64 binary, then on the Pi:
+shellcheck), builds static arm64 and amd64 binaries, ships the one that
+matches the host, then on the host:
 
 1. verifies the binary's sha256;
 2. snapshots the database **with the current binary** (before any migration);
@@ -153,10 +168,11 @@ aws iam create-access-key --user-name ot-backup      # note the key id and secre
 
 The key can only `PutObject` (with SSE) under `ot/`. It cannot list, read or
 delete, and versioning keeps every earlier object even if a key is
-overwritten. A stolen Pi therefore can't destroy the backup history. Cost
+overwritten. A stolen Pi or a compromised server therefore can't destroy the
+backup history. Cost
 for a household's links is a fraction of a cent a month.
 
-### On the Pi
+### On the host
 
 ```sh
 sudo install -m 0600 /dev/null /etc/credstore/ot-backup-aws
@@ -171,14 +187,14 @@ sudo systemctl start ot-backup.service && journalctl -u ot-backup -n 5
 
 ## Restore
 
-From a local snapshot (on the Pi):
+From a local snapshot (on the host):
 
 ```sh
 ls /var/lib/ot/snapshots/
 sudo ot-restore /var/lib/ot/snapshots/ot-20261124T120000.000Z.db
 ```
 
-From S3 (the Pi's key cannot read, so fetch from your Mac):
+From S3 (the host's key cannot read, so fetch from your Mac):
 
 ```sh
 aws s3 ls s3://$B/ot/
@@ -204,7 +220,7 @@ bin/ot export --db /tmp/drill.db | head -40     # links are there
 | Task | Command |
 |---|---|
 | Logs | `ssh <you>@ot journalctl -u ot -f` (debug detail: `OT_LOG_LEVEL=debug` in `/etc/ot/ot.env`) |
-| Health | `curl http://ot/_/healthz` (version, link count, under-voltage flags) |
+| Health | `curl http://ot/_/healthz` (version, link count, free disk; under-voltage flags on a Pi) |
 | Who changed what | `http://ot/_/activity`, or a link's page (`ot/name+`) |
 | Undo a bad edit | link page → History → "Restore this version" |
 | Export | `http://ot/_/export` or `sudo -u ot /usr/local/lib/ot/current/ot export` |
@@ -214,8 +230,8 @@ bin/ot export --db /tmp/drill.db | head -40     # links are there
 | Rotate the AWS key | create a new key, replace `/etc/credstore/ot-backup-aws`, delete the old key |
 | Re-check baseline | `sudo ot-verify` |
 
-OS, Raspberry Pi firmware and Tailscale update themselves daily. The Pi
-reboots at 04:00 when an update needs it.
+The OS (and Raspberry Pi firmware) and Tailscale update themselves daily.
+The host reboots at 04:00 when an update needs it.
 
 ## Troubleshooting
 
@@ -227,7 +243,7 @@ reboots at 04:00 when an update needs it.
 | "unknown host" (421) | A name other than those in `OT_HOSTS` (e.g. `ot.home` when you passed `--lan-domain lan`); re-run bootstrap with the right `--lan-domain`, or add it via `OT_HOSTS` in `/etc/ot/ot.local.env` |
 | "cross-origin request blocked" (403) | A page on another site tried to change a link. That's working as designed. If it was you, use the ot UI itself |
 | `/_/whoami` shows no Tailscale user | WhoIs failed; `journalctl -u ot \| grep whois`; check `/var/run/tailscale/tailscaled.sock` exists |
-| Locked out of SSH | Tailscale SSH (`ssh <you>@ot`) bypasses the LAN rule. Otherwise use a keyboard and HDMI, then `sudo systemctl stop ot-firewall` |
+| Locked out of SSH | Tailscale SSH (`ssh <you>@ot`) bypasses the LAN rule. Otherwise, on a Pi use a keyboard and HDMI, then `sudo systemctl stop ot-firewall`. A cloud server has no console login: build a new one ([cloud.md](cloud.md)) and restore the newest S3 backup (see Restore) |
 | Deploy rolled back | Read the journal lines it printed; `ssh <you>@ot journalctl -u ot -n 50` |
 
 ## Security model in one paragraph

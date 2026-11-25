@@ -1,7 +1,8 @@
 #!/usr/sbin/nft -f
 # ot firewall — rendered by bootstrap.sh into /etc/ot/firewall.nft.
-# Input policy DROP; reachable: ot on tailscale0 (and from the LAN subnet when
-# bootstrap.sh ran with --lan-access) and break-glass OpenSSH from the LAN.
+# Input policy DROP; reachable: ot on tailscale0 (and, on a Pi, from the LAN
+# subnet when bootstrap.sh ran with --lan-access) and break-glass OpenSSH
+# (from the LAN on a Pi, over the tailnet on a cloud server).
 # Output is not filtered.
 #
 # The first two lines make reloading idempotent: create the table if missing,
@@ -25,14 +26,16 @@ table inet ot_filter {
     udp sport 547 udp dport 546 accept
 
     # Tailscale direct (peer-to-peer WireGuard) path; without it traffic
-    # still flows via DERP relays, just slower.
+    # still flows via DERP relays, just slower. WireGuard never answers a
+    # packet that isn't from a known peer, so this port looks closed.
     udp dport 41641 accept
 
-    # ot on the tailnet, and optionally on the home LAN.
+    # ot on the tailnet, and optionally (Pi only) on the home LAN.
     iifname "tailscale0" tcp dport 80 accept
     @LAN_HTTP_RULE@
 
-    # Break-glass OpenSSH, key-only, from the home LAN only.
-    ip saddr @LAN_SUBNET@ tcp dport 22 accept
+    # Break-glass OpenSSH, key-only: from the home LAN (Pi) or the tailnet
+    # (cloud; normally Tailscale SSH answers there first).
+    @SSH_RULE@
   }
 }

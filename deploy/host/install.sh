@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — Pi side of deploy.sh. Do not run by hand.
+# install.sh — host side of deploy.sh. Do not run by hand.
 #   sudo bash install.sh <stage-dir> <version> <sha256>
 #
 # 1. verify the binary's checksum
@@ -15,8 +15,8 @@ SNAPS=/var/lib/ot/snapshots
 
 [[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 1; }
 [[ "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad version" >&2; exit 1; }
-id ot >/dev/null 2>&1 || { echo "user ot missing; run deploy/pi/bootstrap.sh first" >&2; exit 1; }
-[[ -f /etc/ot/ot.env ]] || { echo "/etc/ot/ot.env missing; run deploy/pi/bootstrap.sh first" >&2; exit 1; }
+id ot >/dev/null 2>&1 || { echo "user ot missing; run deploy/host/bootstrap.sh first" >&2; exit 1; }
+[[ -f /etc/ot/ot.env ]] || { echo "/etc/ot/ot.env missing; run deploy/host/bootstrap.sh first" >&2; exit 1; }
 
 echo "==> verifying checksum"
 echo "$SHA  $STAGE/ot" | sha256sum -c --quiet - || { echo "checksum mismatch; aborting" >&2; exit 1; }

@@ -1,4 +1,4 @@
-# ot short-link service. Installed by deploy/pi/bootstrap.sh; configured by
+# ot short-link service. Installed by deploy/host/bootstrap.sh; configured by
 # /etc/ot/ot.env (managed) and /etc/ot/ot.local.env (yours), OT_* variables,
 # see `ot serve -h`. --lan-access adds the LAN subnet to IPAddressAllow via
 # the drop-in ot.service.d/10-lan-access.conf.
@@ -66,7 +66,7 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 IPAddressDeny=any
 IPAddressAllow=localhost 100.64.0.0/10 fd7a:115c:a1e0::/48
 
-# Resources (Pi 3B has 1 GB).
+# Resources (a Pi 3B has 1 GB; the smallest cloud servers 512 MB).
 MemoryMax=192M
 TasksMax=64
 LimitNOFILE=1024

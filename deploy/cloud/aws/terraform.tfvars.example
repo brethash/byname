@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars (gitignored). Pass the auth key as
+# TF_VAR_tailscale_auth_key instead of writing it here.
+name           = "ot"
+region         = "us-west-2"
+ssh_public_key = "ssh-ed25519 AAAA... you@laptop"
+# ipv4 = true   # +$1.50/month; not needed

@@ -1,10 +1,13 @@
 # Using ot/ links on your devices
 
+(If your service has another name, read it in place of `ot` throughout.)
+
 **With Tailscale** (app signed in and connected, **"Use Tailscale DNS"** on),
 `ot/` links work at home and away, and changes are recorded with your name.
 
 **Without Tailscale**, a device on the home network can still use `ot/`
-links. Your router resolves the name, and changes are recorded with the
+links when ot runs on a Pi at home with LAN access on (not on a cloud
+server). Your router resolves the name, and changes are recorded with the
 device's IP address instead of a name. It won't work away from home.
 
 Try `http://ot/_/whoami`: it shows your name (Tailscale) or "home network

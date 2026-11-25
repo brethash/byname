@@ -11,3 +11,9 @@
 /bin/
 /dist/
 /tmp/
+
+# OpenTofu (deploy/cloud): state and tfvars hold secrets; lock files are committed
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars

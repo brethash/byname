@@ -1,0 +1,12 @@
+#!/bin/sh
+# ot first boot, rendered by OpenTofu from deploy/cloud/user-data.sh.tftpl.
+# POSIX sh on purpose (Lightsail may wrap launch scripts in its own sh
+# script); it writes deploy/cloud/first-boot.sh out and runs it with bash.
+set -eu
+umask 077
+cat > /run/ot-first-boot.sh <<'OT_FIRST_BOOT_EOF'
+${script}
+OT_FIRST_BOOT_EOF
+OT_NAME='${name}' OT_TAG='${tag}' OT_ADMIN_USER='${admin_user}' OT_SSH_KEY='${ssh_key}' OT_TS_AUTHKEY='${auth_key}' \
+  bash /run/ot-first-boot.sh
+rm -f /run/ot-first-boot.sh
