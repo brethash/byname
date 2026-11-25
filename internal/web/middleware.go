@@ -104,13 +104,13 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 }
 
 // sourceCheck rejects requests whose peer address is outside the allowed
-// networks (the tailnet by default). This is the application-level copy of
-// the nftables and systemd IPAddressAllow rules.
+// networks (the tailnet by default; the home LAN too when configured). This is
+// the application-level copy of the nftables and systemd IPAddressAllow rules.
 func (s *Server) sourceCheck(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip, ok := peerIP(r)
 		if !ok || !s.allowedIP(ip) {
-			http.Error(w, "ot is only reachable over the tailnet", http.StatusForbidden)
+			http.Error(w, "ot is not reachable from this network", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -229,9 +229,28 @@ func (ls *limiterSet) allow(key string) bool {
 
 type actorKey struct{}
 
+// tailnetNets are Tailscale's address ranges; only these can have a WhoIs
+// identity. Other allowed peers (home LAN, localhost) are known by IP only.
+var tailnetNets = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("fd7a:115c:a1e0::/48"),
+}
+
+func onTailnet(ip netip.Addr) bool {
+	for _, p := range tailnetNets {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // identify resolves who sent r via Tailscale WhoIs, falling back to the IP.
 func (s *Server) identify(r *http.Request) (store.Actor, whois.Identity, error) {
 	ip, _ := peerIP(r)
+	if !onTailnet(ip) {
+		return store.Actor{IP: ip.String()}, whois.Identity{}, whois.ErrUnknown
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	id, err := s.who.WhoIs(ctx, r.RemoteAddr)

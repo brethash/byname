@@ -1,10 +1,14 @@
 # Using ot/ links on your devices
 
-Every device needs the **Tailscale app, signed in and connected**, with
-**"Use Tailscale DNS"** turned on. That is what makes the name `ot` resolve,
-at home or away.
+**With Tailscale** (app signed in and connected, **"Use Tailscale DNS"** on),
+`ot/` links work at home and away, and changes are recorded with your name.
 
-Then try `http://ot/_/whoami`. It should show your name. If it does, links work.
+**Without Tailscale**, a device on the home network can still use `ot/`
+links. Your router resolves the name, and changes are recorded with the
+device's IP address instead of a name. It won't work away from home.
+
+Try `http://ot/_/whoami`: it shows your name (Tailscale) or "home network
+(no Tailscale)". Either way, links work.
 
 ## Per browser
 
@@ -26,12 +30,15 @@ Useful forms:
 
 Record what actually happened on each device in the household.
 
-| Device | OS / browser | `http://ot/_/whoami` shows user? | Typing `ot/test` | Notes |
-|---|---|---|---|---|
-| | | | | |
-| | | | | |
-| | | | | |
-| | | | | |
+| Device | OS / browser | Tailscale? | `http://ot/_/whoami` shows | Typing `ot/test` | Notes |
+|---|---|---|---|---|---|
+| | | | | | |
+| | | | | | |
+| | | | | | |
+| | | | | | |
 
-Also from one device on home Wi-Fi with **Tailscale off**:
-`curl -m 5 http://<pi-lan-ip>/` → expected: times out. Result: ______
+From a device on home Wi-Fi with **Tailscale off**: `nslookup ot` returns
+the Pi's LAN address? ______ `ot/test` opens? ______
+
+From guest Wi-Fi (if any): `curl -m 5 http://<pi-lan-ip>/` → expected: times
+out. Result: ______

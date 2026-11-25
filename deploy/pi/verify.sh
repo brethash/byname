@@ -50,6 +50,16 @@ section "Firewall"
 if nft list table inet ot_filter >/dev/null 2>&1; then pass "table inet ot_filter loaded"; else fail "ot firewall not loaded (systemctl status ot-firewall)"; fi
 if nft list chain inet ot_filter input 2>/dev/null | grep -q 'policy drop'; then pass "input policy drop"; else fail "input policy is not drop"; fi
 if systemctl is-enabled --quiet nftables.service 2>/dev/null; then fail "Debian nftables.service enabled (its 'flush ruleset' wipes tailscale rules)"; else pass "Debian nftables.service disabled"; fi
+# LAN access must be on (or off) consistently in all three layers.
+LAN_MODE=off
+[[ -f /etc/systemd/system/ot.service.d/10-lan-access.conf ]] && LAN_MODE=on
+lan_nft=off; nft list chain inet ot_filter input 2>/dev/null | grep -q 'ip saddr .* tcp dport 80 accept' && lan_nft=on
+lan_env=off; grep '^OT_ALLOW_CIDRS=' /etc/ot/ot.env 2>/dev/null | sed 's/^OT_ALLOW_CIDRS=//' | tr ',' '\n' | grep -vE '^(100\.64\.0\.0/10|fd7a:115c:a1e0::/48|127\.0\.0\.1/32|::1/128)$' | grep -q . && lan_env=on
+if [[ "$LAN_MODE" == "$lan_nft" && "$LAN_MODE" == "$lan_env" ]]; then
+  pass "LAN access $LAN_MODE (firewall, systemd and app agree)"
+else
+  fail "LAN access inconsistent: systemd drop-in=$LAN_MODE firewall=$lan_nft OT_ALLOW_CIDRS=$lan_env; re-run bootstrap.sh"
+fi
 echo "       listening sockets:"
 ss -Hltnu | awk '{printf "         %-5s %s\n", $1, $5}'
 
@@ -103,9 +113,20 @@ section "Checks to run from other devices"
 cat <<EOF
   * From each household device (Tailscale on): open  http://$FIRST_HOST/_/whoami
     and type  $FIRST_HOST/test  in the address bar. Record results in docs/client-setup.md.
-  * From a LAN device with Tailscale OFF, this must time out (LAN is blocked):
+EOF
+if [[ "$LAN_MODE" == on ]]; then
+  cat <<EOF
+  * LAN access is ON. From a device on home Wi-Fi with Tailscale OFF, both should work:
+        nslookup $FIRST_HOST          (router DNS must answer ${lan_ip:-<pi-lan-ip>})
+        curl -m 5 http://$FIRST_HOST/_/healthz
+    If you have a guest Wi-Fi, from it this should time out:  curl -m 5 http://${lan_ip:-<pi-lan-ip>}/
+EOF
+else
+  cat <<EOF
+  * LAN access is OFF. From a LAN device with Tailscale OFF, this must time out:
         curl -m 5 http://${lan_ip:-<pi-lan-ip>}/
 EOF
+fi
 
 echo
 if [[ $FAILS -eq 0 ]]; then printf '\033[32mAll checks passed.\033[0m\n'; else printf '\033[31m%d check(s) failed.\033[0m\n' "$FAILS"; fi

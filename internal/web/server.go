@@ -218,9 +218,10 @@ type view struct {
 	Error   string
 	Message string
 
-	Identity whois.Identity
-	PeerIP   string
-	WhoIsErr string
+	Identity  whois.Identity
+	PeerIP    string
+	OnTailnet bool
+	WhoIsErr  string
 }
 
 type formData struct {

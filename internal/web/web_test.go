@@ -210,6 +210,31 @@ func TestOnlyTailnetPeers(t *testing.T) {
 	}
 }
 
+func TestLANAccessWhenConfigured(t *testing.T) {
+	h := newHarness(t, func(c *Config) {
+		c.AllowedNets = append(c.AllowedNets, netip.MustParsePrefix("192.168.1.0/24"))
+	})
+	lan := peer("192.168.1.20:5000")
+	expectStatus(t, h.do("GET", "/", "", lan), http.StatusOK)
+	expectStatus(t, h.do("GET", "/", "", peer("10.0.0.5:5000")), http.StatusForbidden)
+
+	// LAN devices can edit (same-origin), attributed by IP; WhoIs isn't asked.
+	w := h.do("POST", "/_/links", form("name", "lanlink", "target", "https://lan.example"), formBody(), sameOrigin(), lan)
+	expectStatus(t, w, http.StatusSeeOther)
+	l, err := h.svc.Store.Get(context.Background(), "lanlink")
+	if err != nil || l.CreatedBy != "192.168.1.20" {
+		t.Fatalf("LAN create = %+v, %v", l, err)
+	}
+	// Cross-origin protection still applies on the LAN.
+	w = h.do("POST", "/_/links", form("name", "x", "target", "https://x.example"), formBody(), header("Origin", "http://evil.example"), lan)
+	expectStatus(t, w, http.StatusForbidden)
+
+	body := h.do("GET", "/_/whoami", "", lan).Body.String()
+	if !strings.Contains(body, "home network (no Tailscale)") || strings.Contains(body, "no tailnet peer") {
+		t.Fatalf("whoami for LAN device:\n%s", body)
+	}
+}
+
 func TestHostAllowlist(t *testing.T) {
 	h := newHarness(t)
 	for hst, want := range map[string]int{

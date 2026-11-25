@@ -3,7 +3,8 @@
 #
 # Run on the Pi, as root, from a copy of the repo's deploy/ directory:
 #
-#   sudo deploy/pi/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24
+#   sudo deploy/pi/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24 \
+#        [--lan-access --lan-domain lan]
 #
 # Safe to re-run: every step checks before it changes anything. It never
 # runs `tailscale up` for you (that needs your browser); it prints the command.
@@ -13,15 +14,23 @@ DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ADMIN_USER=""
 LAN_SUBNET=""
 HOSTNAME_WANT="ot"
+LAN_ACCESS=0
+LAN_DOMAIN=""
 FORCE_FIREWALL=0
 REBOOT_NEEDED=0
 
 usage() {
   cat <<'USAGE'
-usage: sudo bootstrap.sh --admin-user USER --lan-subnet CIDR [--hostname ot] [--force-firewall]
+usage: sudo bootstrap.sh --admin-user USER --lan-subnet CIDR [--lan-access] [--lan-domain DOMAIN]
+                         [--hostname ot] [--force-firewall]
 
   --admin-user      the account you log in with (must already have an SSH key)
   --lan-subnet      your home LAN, e.g. 192.168.1.0/24 (break-glass SSH is allowed from here)
+  --lan-access      also serve ot to LAN devices that don't run Tailscale (plain HTTP on
+                    the LAN; their changes are recorded by IP address). Re-run without it
+                    to turn LAN access off again.
+  --lan-domain      your router's local domain (e.g. lan, home, home.arpa), so ot.DOMAIN is
+                    accepted as well as the bare name ot
   --hostname        machine and tailnet name (default: ot)
   --force-firewall  load the firewall even if your current SSH session is not
                     from the LAN subnet (you could lock yourself out)
@@ -33,6 +42,8 @@ while [[ $# -gt 0 ]]; do
     --admin-user) ADMIN_USER="${2:?}"; shift 2 ;;
     --lan-subnet) LAN_SUBNET="${2:?}"; shift 2 ;;
     --hostname) HOSTNAME_WANT="${2:?}"; shift 2 ;;
+    --lan-access) LAN_ACCESS=1; shift ;;
+    --lan-domain) LAN_DOMAIN="${2:?}"; shift 2 ;;
     --force-firewall) FORCE_FIREWALL=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
@@ -61,7 +72,9 @@ import ipaddress, sys
 ipaddress.IPv4Network(sys.argv[1], strict=True)
 PY
 [[ "$HOSTNAME_WANT" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || die "invalid hostname: $HOSTNAME_WANT"
-ok "$PRETTY_NAME on $(uname -m), admin user $ADMIN_USER, LAN $LAN_SUBNET"
+[[ -z "$LAN_DOMAIN" || "$LAN_DOMAIN" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || die "invalid --lan-domain: $LAN_DOMAIN"
+[[ "$LAN_DOMAIN" == "local" ]] && die "--lan-domain local is mDNS, not router DNS; use your router's domain (lan, home, home.arpa…)"
+ok "$PRETTY_NAME on $(uname -m), admin user $ADMIN_USER, LAN $LAN_SUBNET, LAN access $([[ $LAN_ACCESS -eq 1 ]] && echo on || echo off)"
 
 # ---------------------------------------------------------------- hostname
 step "Hostname"
@@ -218,24 +231,51 @@ step "ot configuration"
 TS_SUFFIX="$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("MagicDNSSuffix") or "")
 except Exception: print("")' || true)"
-if [[ -n "$TS_SUFFIX" ]]; then
-  HOSTS="$HOSTNAME_WANT,$HOSTNAME_WANT.$TS_SUFFIX"
-else
-  HOSTS="$HOSTNAME_WANT"
+HOSTS="$HOSTNAME_WANT"
+[[ -n "$TS_SUFFIX" ]] && HOSTS+=",$HOSTNAME_WANT.$TS_SUFFIX"
+[[ -n "$LAN_DOMAIN" ]] && HOSTS+=",$HOSTNAME_WANT.$LAN_DOMAIN"
+if [[ $LAN_ACCESS -eq 1 ]]; then
+  # Also accept the Pi's own LAN address as a Host name (http://192.168.1.x/),
+  # handy before router DNS is set up. Safe against DNS rebinding: a hostile
+  # page can't make a browser send this Host. Reserve the address in DHCP.
+  LAN_IP="$(ip -4 -o addr show scope global | awk '$2 !~ /^tailscale/ {print $4}' | cut -d/ -f1 | head -1)"
+  if [[ -n "$LAN_IP" ]] && python3 -c 'import ipaddress,sys; sys.exit(ipaddress.ip_address(sys.argv[1]) not in ipaddress.ip_network(sys.argv[2]))' "$LAN_IP" "$LAN_SUBNET"; then
+    HOSTS+=",$LAN_IP"
+  else
+    warn "could not find this Pi's address inside $LAN_SUBNET; LAN devices must use the name"
+  fi
 fi
-if [[ ! -f /etc/ot/ot.env ]] || grep -q '^OT_HOSTS=@\|^OT_HOSTS='"$HOSTNAME_WANT"'$' /etc/ot/ot.env; then
-  sed "s|@OT_HOSTS@|$HOSTS|" "$DEPLOY_DIR/pi/ot.env.in" > /etc/ot/ot.env
-  chmod 0644 /etc/ot/ot.env
-  ok "wrote /etc/ot/ot.env (OT_HOSTS=$HOSTS)"
-else
-  ok "kept existing /etc/ot/ot.env ($(grep '^OT_HOSTS=' /etc/ot/ot.env))"
-fi
+ALLOW="100.64.0.0/10,fd7a:115c:a1e0::/48,127.0.0.1/32,::1/128"
+[[ $LAN_ACCESS -eq 1 ]] && ALLOW+=",$LAN_SUBNET"
+# ot.env is fully managed (rewritten on every run); local overrides go in
+# ot.local.env, which ot.service reads afterwards.
+sed -e "s|@OT_HOSTS@|$HOSTS|" -e "s|@OT_ALLOW_CIDRS@|$ALLOW|" "$DEPLOY_DIR/pi/ot.env.in" > /etc/ot/ot.env
+chmod 0644 /etc/ot/ot.env
+[[ -f /etc/ot/ot.local.env ]] || printf '# Local overrides for /etc/ot/ot.env (same OT_* variables). Kept across bootstrap runs.\n' > /etc/ot/ot.local.env
+ok "wrote /etc/ot/ot.env (OT_HOSTS=$HOSTS)"
+ok "allowed peers: $ALLOW"
 [[ -n "$TS_SUFFIX" ]] || warn "tailnet not joined yet; re-run this script after 'tailscale up' to add the full tailnet name to OT_HOSTS"
+# systemd's IP filter for ot.service only allows the tailnet and localhost;
+# LAN access adds the LAN subnet in a drop-in.
+install -d -m 0755 /etc/systemd/system/ot.service.d
+if [[ $LAN_ACCESS -eq 1 ]]; then
+  printf '# Managed by ot bootstrap.sh --lan-access\n[Service]\nIPAddressAllow=%s\n' "$LAN_SUBNET" \
+    > /etc/systemd/system/ot.service.d/10-lan-access.conf
+  ok "ot.service accepts $LAN_SUBNET (drop-in 10-lan-access.conf)"
+else
+  rm -f /etc/systemd/system/ot.service.d/10-lan-access.conf
+fi
 install -m 0644 "$DEPLOY_DIR/pi/ot-backup.env.example" /etc/ot/ot-backup.env.example
 
 # ---------------------------------------------------------------- firewall
 step "Firewall (nftables, table inet ot_filter)"
-sed "s|@LAN_SUBNET@|$LAN_SUBNET|" "$DEPLOY_DIR/pi/firewall.nft.in" > /etc/ot/firewall.nft.new
+if [[ $LAN_ACCESS -eq 1 ]]; then
+  LAN_HTTP_RULE="ip saddr $LAN_SUBNET tcp dport 80 accept"
+else
+  LAN_HTTP_RULE="# (LAN HTTP access off; bootstrap.sh --lan-access turns it on)"
+fi
+sed -e "s|@LAN_SUBNET@|$LAN_SUBNET|" -e "s|@LAN_HTTP_RULE@|$LAN_HTTP_RULE|" \
+  "$DEPLOY_DIR/pi/firewall.nft.in" > /etc/ot/firewall.nft.new
 nft -c -f /etc/ot/firewall.nft.new || die "firewall rules failed to parse"
 # Lockout guard: an OpenSSH session from outside the LAN subnet would survive
 # (it is established) but you could not reconnect. sudo strips SSH_CLIENT, so
@@ -267,7 +307,11 @@ install -m 0644 "$DEPLOY_DIR/systemd/ot-firewall.service" /etc/systemd/system/ot
 systemctl daemon-reload
 systemctl enable ot-firewall.service >/dev/null 2>&1
 systemctl restart ot-firewall.service
-ok "input policy drop; allowed: tcp/80 on tailscale0, tcp/22 from $LAN_SUBNET, udp/41641, ICMP, DHCP"
+if [[ $LAN_ACCESS -eq 1 ]]; then
+  ok "input policy drop; allowed: tcp/80 on tailscale0 and from $LAN_SUBNET, tcp/22 from $LAN_SUBNET, udp/41641, ICMP, DHCP"
+else
+  ok "input policy drop; allowed: tcp/80 on tailscale0, tcp/22 from $LAN_SUBNET, udp/41641, ICMP, DHCP"
+fi
 
 # ---------------------------------------------------------------- units
 step "systemd units"
@@ -278,6 +322,8 @@ install -m 0755 "$DEPLOY_DIR/pi/verify.sh" /usr/local/sbin/ot-verify
 install -m 0755 "$DEPLOY_DIR/pi/restore.sh" /usr/local/sbin/ot-restore
 systemctl daemon-reload
 systemctl enable ot.service >/dev/null 2>&1
+# Pick up env/drop-in changes if ot is already running.
+systemctl try-restart ot.service
 ok "ot.service enabled (starts once a binary is deployed)"
 if [[ -f /etc/ot/ot-backup.env && -f /etc/credstore/ot-backup-aws ]]; then
   systemctl enable --now ot-backup.timer >/dev/null 2>&1

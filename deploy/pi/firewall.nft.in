@@ -1,7 +1,8 @@
 #!/usr/sbin/nft -f
 # ot firewall — rendered by bootstrap.sh into /etc/ot/firewall.nft.
-# Input policy DROP; the only listeners reachable are ot on tailscale0 and
-# break-glass OpenSSH from the LAN. Output is not filtered.
+# Input policy DROP; reachable: ot on tailscale0 (and from the LAN subnet when
+# bootstrap.sh ran with --lan-access) and break-glass OpenSSH from the LAN.
+# Output is not filtered.
 #
 # The first two lines make reloading idempotent: create the table if missing,
 # then delete and recreate it. Nothing outside table inet ot_filter is touched.
@@ -27,8 +28,9 @@ table inet ot_filter {
     # still flows via DERP relays, just slower.
     udp dport 41641 accept
 
-    # ot, on the tailnet only.
+    # ot on the tailnet, and optionally on the home LAN.
     iifname "tailscale0" tcp dport 80 accept
+    @LAN_HTTP_RULE@
 
     # Break-glass OpenSSH, key-only, from the home LAN only.
     ip saddr @LAN_SUBNET@ tcp dport 22 accept

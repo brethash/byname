@@ -32,6 +32,30 @@ non-localhost origin, which is the condition `http://ot` runs in.
 | A09 Logging | Every change logged with actor; blocked cross-origin attempts at WARN with Origin; 403/421/429 logged; durable audit in the DB | server log during Chrome replay |
 | A10 Exceptions | Panics recovered → generic 500; internal errors logged, not shown; source and Host checks fail closed; WhoIs failure degrades attribution only | `fail()`, `recoverer` |
 
+## Change after the review: LAN access (2026-11-24)
+
+You chose to let home-network devices without Tailscale use ot, including
+creating and editing links. It's opt-in (`bootstrap.sh --lan-access`) and
+opens three layers together: an nftables rule for tcp/80 from the LAN
+subnet, a systemd `IPAddressAllow` drop-in, and `OT_ALLOW_CIDRS`. `ot-verify`
+fails if they disagree. Everything else still applies to LAN requests: the
+Host allowlist, cross-origin protection, limits, audit log and revert
+(`TestLANAccessWhenConfigured`).
+
+What it costs:
+
+- **Cleartext on the LAN.** Another device on the home network (a compromised
+  IoT gadget, say) could sniff LAN-side ot traffic or, with ARP spoofing,
+  alter redirects. Tailscale traffic stays encrypted.
+- **Any LAN device can edit links**, including the devices most likely to be
+  compromised.
+- **IP-only attribution** for LAN edits. DHCP reservations make those
+  addresses meaningful in the history.
+
+Mitigations worth doing: put IoT devices and guests on an isolated guest
+Wi-Fi/VLAN so they are outside `--lan-subnet`, and check `ot/_/activity` now
+and then.
+
 ## Accepted risks
 
 1. **A household member can change any link on purpose.** That is the

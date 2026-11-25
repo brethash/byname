@@ -2,8 +2,10 @@
 <section class="card">
   <h1>Who am I?</h1>
   <dl>
-    <dt>Your tailnet address</dt><dd><code>{{.PeerIP}}</code></dd>
-    {{if .Identity.Login}}
+    <dt>Your address</dt><dd><code>{{.PeerIP}}</code> <span class="muted small">{{if .OnTailnet}}via Tailscale{{else}}home network (no Tailscale){{end}}</span></dd>
+    {{if not .OnTailnet}}
+    <dt>Identity</dt><dd>None, because this device isn't using Tailscale. Changes you make are recorded with the address above. Turn Tailscale on to have them recorded with your name.</dd>
+    {{else if .Identity.Login}}
     <dt>Tailscale user</dt><dd>{{.Identity.Login}}{{with .Identity.Display}} ({{.}}){{end}}</dd>
     <dt>Device</dt><dd>{{.Identity.Node}}</dd>
     {{else}}

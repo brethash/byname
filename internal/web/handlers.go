@@ -345,8 +345,9 @@ func (s *Server) keyword(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	a, id, err := s.identify(r)
-	v := view{Title: "Who am I", Identity: id, PeerIP: a.IP}
-	if err != nil {
+	ip, _ := peerIP(r)
+	v := view{Title: "Who am I", Identity: id, PeerIP: a.IP, OnTailnet: onTailnet(ip)}
+	if err != nil && v.OnTailnet {
 		v.WhoIsErr = err.Error()
 	}
 	s.render(w, http.StatusOK, "whoami", v)

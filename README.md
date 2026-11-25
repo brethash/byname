@@ -1,11 +1,13 @@
 # ot/
 
 Household short links (`ot/wiki`, `ot/gh/otterly`) served from a Raspberry
-Pi 3B to every device on your tailnet, at home or away.
+Pi 3B to every device on your tailnet, at home or away, and optionally to
+devices on the home network that don't run Tailscale.
 
-- **Tailnet only.** Tailscale MagicDNS resolves `ot` on every device running
-  Tailscale. Nothing listens on the LAN except break-glass SSH. WireGuard
-  encrypts everything, so plain HTTP is safe.
+- **Tailnet first, LAN optional.** Tailscale MagicDNS resolves `ot` on every
+  device running Tailscale, and WireGuard encrypts that traffic. With
+  `--lan-access`, home-network devices without Tailscale can use it too, over
+  plain HTTP and identified by IP address; router DNS resolves `ot` for them.
 - **No logins, full accountability.** Anyone on the tailnet can create or edit
   a link. Every change records who made it (Tailscale WhoIs), and any earlier
   version can be restored with one click.
