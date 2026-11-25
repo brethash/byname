@@ -479,8 +479,30 @@ func TestAnonKey(t *testing.T) {
 	}
 }
 
+func TestWriteLimiterNeverEvicts(t *testing.T) {
+	ls := newLimiterSet(rate.Limit(1), 5, 3)
+	ls.maxKeys = 2
+	for range 3 {
+		ls.allow("alice")
+	}
+	if ls.allow("alice") {
+		t.Fatal("daily budget not enforced")
+	}
+	ls.allow("bob")
+	if ls.allow("mallory") {
+		t.Fatal("a new key was admitted to a full table")
+	}
+	if ls.allow("alice") {
+		t.Fatal("alice's spent daily budget was reset")
+	}
+	if !ls.allow("bob") {
+		t.Fatal("an existing key was refused")
+	}
+}
+
 func TestLimiterMemoryBounded(t *testing.T) {
 	ls := newLimiterSet(rate.Limit(1), 3, 0)
+	ls.evict = true
 	if ls.idle > time.Minute {
 		t.Fatalf("anonymous entries kept %v after going idle", ls.idle)
 	}

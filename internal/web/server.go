@@ -173,6 +173,7 @@ func (s *Server) setupPublic() error {
 	}
 	s.attempts = auth.NewAttempts(signinTTL)
 	s.anon = newLimiterSet(rate.Limit(1), 30, 0) // 60/min, bursts of 30
+	s.anon.evict = true
 	s.public = s.publicRoutes()
 	return nil
 }

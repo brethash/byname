@@ -186,10 +186,16 @@ func limits(next http.Handler) http.Handler {
 // limiterSet holds two token buckets per key (device, account or address): a
 // short-term rate (stops bursts) and a daily budget (bounds how fast a
 // compromised device could grow the append-only audit log and fill the SD
-// card). Memory is bounded: entries are kept in least-recently-used order,
-// dropped once idle long enough that both buckets would be full again, and
-// past maxKeys the least recently used entry makes room. Every key always
-// gets a bucket of its own, so nobody can exhaust a shared one.
+// card). Memory is bounded: entries are kept in least-recently-used order and
+// dropped once idle long enough that both buckets would be full again. What
+// happens past maxKeys depends on evict:
+//
+//   - evict (anonymous internet requests): the least recently used entry
+//     makes room, so every address gets a bucket of its own and nobody can
+//     drain a shared one;
+//   - no evict (changes): new keys are refused, so a daily budget can never
+//     be reset by pushing its entry out. Only signed-in accounts, tailnet
+//     devices and LAN addresses have change keys, far fewer than maxKeys.
 type limiterSet struct {
 	mu      sync.Mutex
 	limit   rate.Limit // short-term rate; <= 0 disables
@@ -197,6 +203,7 @@ type limiterSet struct {
 	daily   int           // per key per 24 h; <= 0 disables
 	idle    time.Duration // after this long unused, an entry is as good as new
 	maxKeys int
+	evict   bool
 	m       map[string]*list.Element // values are *limiterEntry
 	lru     *list.List               // front: most recently used
 }
@@ -241,6 +248,9 @@ func (ls *limiterSet) allow(key string) bool {
 		ls.lru.MoveToFront(el)
 	} else {
 		if ls.lru.Len() >= ls.maxKeys {
+			if !ls.evict {
+				return false
+			}
 			ls.remove(ls.lru.Back())
 		}
 		e = &limiterEntry{key: key}
