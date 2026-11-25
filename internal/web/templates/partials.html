@@ -1,0 +1,56 @@
+{{define "linkform"}}{{$f := .Form}}
+<form class="card linkform" method="post" action="{{if $f.Editing}}/_/links/{{$f.ID}}{{else}}/_/links{{end}}">
+  {{with index $f.Errors "form"}}<p class="error" role="alert">{{.}}</p>{{end}}
+  {{if $f.Editing}}<input type="hidden" name="rev" value="{{$f.Rev}}">{{end}}
+  <div class="field">
+    <label for="f-name">Short name</label>
+    <div class="prefixed"><span>{{host}}/</span><input id="f-name" name="name" value="{{$f.Name}}" required maxlength="64" autocomplete="off" autocapitalize="none" spellcheck="false"{{if not $f.Name}} autofocus{{end}}></div>
+    {{with index $f.Errors "name"}}<p class="error">{{.}}</p>{{end}}
+  </div>
+  <div class="field">
+    <label for="f-target">Destination URL</label>
+    <input id="f-target" name="target" type="text" inputmode="url" value="{{$f.Target}}" required maxlength="2048" placeholder="https://…" autocomplete="off" autocapitalize="none" spellcheck="false"{{if and $f.Name (not $f.Editing)}} autofocus{{end}}>
+    {{with index $f.Errors "target"}}<p class="error">{{.}}</p>{{end}}
+    <p class="hint">Extra path is appended: <code>{{host}}/name/a/b</code> → <code>destination/a/b</code>. Place it yourself with <code>{1}</code>…<code>{9}</code> or <code>{*}</code>, e.g. <code>https://github.com/{1}</code>.</p>
+  </div>
+  <div class="field">
+    <label for="f-desc">Description <span class="muted">(optional)</span></label>
+    <input id="f-desc" name="description" value="{{$f.Description}}" maxlength="512" autocomplete="off">
+    {{with index $f.Errors "description"}}<p class="error">{{.}}</p>{{end}}
+  </div>
+  <div class="actions">
+    <button class="btn primary" type="submit">{{if $f.Editing}}Save changes{{else}}Create link{{end}}</button>
+    {{if $f.Editing}}<a class="btn" href="/_/links/{{$f.ID}}">Cancel</a>{{end}}
+  </div>
+</form>
+{{end}}
+
+{{define "compactlist"}}
+{{if .}}<ul class="compact">{{range .}}
+  <li><a href="/{{.Name}}">{{host}}/{{.Name}}</a><span class="muted small">{{.Clicks}} clicks · <a href="/_/links/{{.ID}}">details</a></span></li>{{end}}
+</ul>{{else}}<p class="muted">None yet.</p>{{end}}
+{{end}}
+
+{{define "actor"}}{{if .Login}}<span title="{{.IP}}">{{.Login}}</span>{{with .Node}} <span class="muted small">on {{.}}</span>{{end}}{{else}}<span class="muted">{{.IP}}</span>{{end}}{{end}}
+
+{{define "change"}}{{if and .Before .After}}
+  {{if ne .Before.Target .After.Target}}<div class="diff"><del>{{trunc .Before.Target 70}}</del> → <ins>{{trunc .After.Target 70}}</ins></div>{{end}}
+  {{if ne .Before.Name .After.Name}}<div class="diff">renamed <del>{{.Before.Name}}</del> → <ins>{{.After.Name}}</ins></div>{{end}}
+  {{if ne .Before.Description .After.Description}}<div class="diff muted small">description changed</div>{{end}}
+{{else if .After}}<div class="diff"><ins>{{trunc .After.Target 70}}</ins></div>
+{{else if .Before}}<div class="diff"><del>{{trunc .Before.Target 70}}</del></div>
+{{end}}{{end}}
+
+{{define "events"}}
+{{if .}}<div class="scroll"><table class="events">
+<thead><tr><th>When</th><th>Who</th><th>What</th><th>Link</th></tr></thead>
+<tbody>{{range .}}
+<tr>
+  <td title="{{when .At}}">{{ago .At}}</td>
+  <td>{{template "actor" .Actor}}</td>
+  <td><span class="tag tag-{{.Action}}">{{.Action}}</span></td>
+  <td><a href="/_/links/{{.LinkID}}">{{host}}/{{.LinkName}}</a>{{template "change" .}}</td>
+</tr>{{end}}
+</tbody></table></div>
+{{else}}<p class="muted">No changes yet.</p>{{end}}
+{{end}}

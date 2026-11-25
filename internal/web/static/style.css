@@ -1,0 +1,139 @@
+:root {
+  --bg: #f7f7f5;
+  --surface: #ffffff;
+  --text: #1d1d1f;
+  --muted: #6b6b70;
+  --border: #e2e2e0;
+  --accent: #0f6e6e;
+  --accent-text: #ffffff;
+  --danger: #b42318;
+  --ins: #e6f4ea;
+  --del: #fdecea;
+  --code-bg: #f0f0ee;
+  --radius: 10px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141416;
+    --surface: #1c1c1f;
+    --text: #ececef;
+    --muted: #9a9aa2;
+    --border: #2e2e33;
+    --accent: #3fb6b2;
+    --accent-text: #0b1a1a;
+    --danger: #f0786c;
+    --ins: #183a24;
+    --del: #43201d;
+    --code-bg: #26262b;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 var(--font);
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font: 0.9em var(--mono); background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 5px; }
+code { overflow-wrap: anywhere; }
+code.wrap { word-break: break-all; }
+h1 { font-size: 1.6rem; line-height: 1.25; margin: 0 0 0.5rem; overflow-wrap: anywhere; }
+h2 { font-size: 1.1rem; margin: 1.75rem 0 0.75rem; }
+h2 a { font-weight: normal; margin-left: 0.5rem; }
+.muted { color: var(--muted); }
+.small { font-size: 0.85rem; }
+.hint { color: var(--muted); font-size: 0.85rem; margin: 0.35rem 0 0; }
+.error { color: var(--danger); font-size: 0.9rem; margin: 0.35rem 0 0; }
+
+.top {
+  display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+  padding: 0.75rem 1rem; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.brand { font: 700 1.35rem var(--mono); color: var(--text); }
+.brand span { color: var(--accent); }
+.brand:hover { text-decoration: none; }
+.search { flex: 1 1 14rem; min-width: 0; }
+.search input { width: 100%; }
+.top nav { display: flex; align-items: center; gap: 0.9rem; margin-left: auto; }
+@media (max-width: 600px) {
+  .search { order: 3; flex-basis: 100%; }
+}
+
+main { max-width: 64rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+footer { max-width: 64rem; margin: 0 auto; padding: 1rem; color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--border); }
+
+.hero { margin-bottom: 1rem; }
+.hero h1 { font-family: var(--mono); }
+.grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 0 2rem; }
+@media (max-width: 760px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 1.25rem; margin-bottom: 1rem;
+}
+
+input, button { font: inherit; }
+input[type=text], input[type=search], input:not([type]) {
+  width: 100%; padding: 0.55rem 0.7rem; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+label { display: block; font-weight: 600; margin-bottom: 0.3rem; }
+.field { margin-bottom: 1rem; }
+.prefixed { display: flex; align-items: stretch; }
+.prefixed span {
+  display: flex; align-items: center; padding: 0 0.6rem; font-family: var(--mono); color: var(--muted);
+  background: var(--code-bg); border: 1px solid var(--border); border-right: 0; border-radius: 8px 0 0 8px;
+}
+.prefixed span { flex: none; }
+.prefixed input { flex: 1 1 auto; min-width: 0; border-radius: 0 8px 8px 0; font-family: var(--mono); }
+
+.actions { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+.actions form { margin: 0; }
+.btn {
+  display: inline-block; padding: 0.5rem 0.95rem; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); cursor: pointer; line-height: 1.3;
+}
+.btn:hover { text-decoration: none; border-color: var(--muted); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn.danger { color: var(--danger); border-color: var(--danger); }
+.btn.small { padding: 0.25rem 0.6rem; font-size: 0.85rem; }
+
+ul.compact { list-style: none; padding: 0; margin: 0; }
+ul.compact li {
+  display: flex; justify-content: space-between; gap: 1rem; padding: 0.45rem 0;
+  border-bottom: 1px solid var(--border); font-family: var(--mono);
+}
+ul.compact li .muted { font-family: var(--font); white-space: nowrap; }
+
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.93rem; }
+th { text-align: left; font-weight: 600; color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
+th, td { padding: 0.55rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+td.num, th.num { text-align: right; }
+td.target code { word-break: break-all; }
+table.links td:first-child { font-family: var(--mono); white-space: nowrap; }
+
+.tag { display: inline-block; font-size: 0.75rem; padding: 0.05rem 0.45rem; border-radius: 999px; background: var(--code-bg); }
+.tag-create, .tag-restore, .tag-import { background: var(--ins); }
+.tag-delete { background: var(--del); }
+.tag-revert { outline: 1px solid var(--accent); }
+.diff { font: 0.82rem var(--mono); margin-top: 0.2rem; word-break: break-all; }
+ins { background: var(--ins); text-decoration: none; }
+del { background: var(--del); }
+
+.detail-head { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.detail-head h1 { font-family: var(--mono); margin: 0; }
+dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.4rem 1.25rem; margin: 1rem 0 1.25rem; }
+dt { color: var(--muted); }
+dd { margin: 0; }
+@media (max-width: 520px) { dl { grid-template-columns: minmax(0, 1fr); } dt { margin-top: 0.5rem; } }
+
+.list-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 0.5rem 1rem; margin-bottom: 1rem; }
+.sorts { color: var(--muted); font-size: 0.9rem; }
+.sorts a[aria-current] { font-weight: 700; color: var(--text); }

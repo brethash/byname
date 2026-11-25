@@ -1,0 +1,15 @@
+{{define "content"}}
+<section class="card">
+  <h1>Who am I?</h1>
+  <dl>
+    <dt>Your tailnet address</dt><dd><code>{{.PeerIP}}</code></dd>
+    {{if .Identity.Login}}
+    <dt>Tailscale user</dt><dd>{{.Identity.Login}}{{with .Identity.Display}} ({{.}}){{end}}</dd>
+    <dt>Device</dt><dd>{{.Identity.Node}}</dd>
+    {{else}}
+    <dt>Tailscale identity</dt><dd>Unknown, so changes you make are recorded with your address only.{{with .WhoIsErr}}<div class="muted small">{{.}}</div>{{end}}</dd>
+    {{end}}
+  </dl>
+  <p class="muted">Every change on {{host}}/ is recorded with this identity.</p>
+</section>
+{{end}}

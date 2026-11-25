@@ -1,0 +1,22 @@
+{{define "content"}}
+<section class="hero">
+  <h1>{{host}}/</h1>
+  <p class="muted">{{.Count}} links. Type <code>{{host}}/name</code> in a browser on any device on the tailnet.</p>
+</section>
+<div class="grid">
+  <section>
+    <h2>Create a link</h2>
+    {{template "linkform" .}}
+  </section>
+  <section>
+    <h2>Popular</h2>
+    {{template "compactlist" .Popular}}
+    <h2>Newest</h2>
+    {{template "compactlist" .Newest}}
+  </section>
+</div>
+<section>
+  <h2>Recent changes <a class="small" href="/_/activity">see all</a></h2>
+  {{template "events" .Events}}
+</section>
+{{end}}

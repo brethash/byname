@@ -1,0 +1,240 @@
+package web
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"net/netip"
+	"runtime/debug"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/time/rate"
+
+	"otterly-go/internal/store"
+	"otterly-go/internal/whois"
+)
+
+// Request limits.
+const (
+	maxBodyBytes  = 16 << 10
+	maxRequestURI = 4096
+)
+
+// contentSecurityPolicy allows only this origin's own CSS, JS and images, and
+// forbids framing, plugins, <base> rewriting and posting forms elsewhere.
+const contentSecurityPolicy = "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; " +
+	"form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+
+// recoverer turns a panic into a 500 instead of a dropped connection.
+func (s *Server) recoverer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if v := recover(); v != nil {
+				if v == http.ErrAbortHandler {
+					panic(v)
+				}
+				s.log.Error("panic", "err", v, "path", r.URL.Path, "stack", string(debug.Stack()))
+				http.Error(w, "internal error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// securityHeaders sets headers on every response, including rejections.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Cross-Origin-Resource-Policy", "same-origin")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+		next.ServeHTTP(w, r)
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.status == 0 {
+		r.status = code
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+// logRequests logs mutations and errors at info/error, everything else at
+// debug, so the journal (volatile on the Pi) is not filled by redirects.
+func (s *Server) logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		level := slog.LevelDebug
+		switch {
+		case rec.status >= 500:
+			level = slog.LevelError
+		case r.Method != http.MethodGet && r.Method != http.MethodHead, rec.status == http.StatusForbidden,
+			rec.status == http.StatusMisdirectedRequest, rec.status == http.StatusTooManyRequests:
+			level = slog.LevelInfo
+		}
+		s.log.Log(r.Context(), level, "request", "method", r.Method, "path", r.URL.Path,
+			"status", rec.status, "ms", time.Since(start).Milliseconds(), "remote", r.RemoteAddr)
+	})
+}
+
+// sourceCheck rejects requests whose peer address is outside the allowed
+// networks (the tailnet by default). This is the application-level copy of
+// the nftables and systemd IPAddressAllow rules.
+func (s *Server) sourceCheck(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip, ok := peerIP(r)
+		if !ok || !s.allowedIP(ip) {
+			http.Error(w, "ot is only reachable over the tailnet", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func peerIP(r *http.Request) (netip.Addr, bool) {
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return ap.Addr().Unmap(), true
+}
+
+func (s *Server) allowedIP(ip netip.Addr) bool {
+	for _, p := range s.cfg.AllowedNets {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeHost lower-cases a Host header and strips a trailing dot and the
+// default port.
+func normalizeHost(h string) string {
+	h = strings.ToLower(strings.TrimSpace(h))
+	h = strings.TrimSuffix(h, ":80")
+	return strings.TrimSuffix(h, ".")
+}
+
+// hostCheck rejects requests for any Host but ours. This defeats DNS
+// rebinding: a hostile site that re-points its own name at the Pi still sends
+// its own name as Host.
+func (s *Server) hostCheck(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.hosts[normalizeHost(r.Host)] {
+			http.Error(w, "unknown host", http.StatusMisdirectedRequest)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// limits caps request URI and body sizes.
+func limits(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(r.RequestURI) > maxRequestURI {
+			http.Error(w, "request URI too long", http.StatusRequestURITooLong)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// limiterSet is a per-actor token bucket for writes.
+type limiterSet struct {
+	mu    sync.Mutex
+	limit rate.Limit
+	burst int
+	m     map[string]*limiterEntry
+}
+
+type limiterEntry struct {
+	l    *rate.Limiter
+	seen time.Time
+}
+
+func newLimiterSet(limit rate.Limit, burst int) *limiterSet {
+	return &limiterSet{limit: limit, burst: burst, m: make(map[string]*limiterEntry)}
+}
+
+func (ls *limiterSet) allow(key string) bool {
+	if ls.limit <= 0 {
+		return true
+	}
+	now := time.Now()
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	if len(ls.m) > 1000 {
+		for k, e := range ls.m {
+			if now.Sub(e.seen) > 10*time.Minute {
+				delete(ls.m, k)
+			}
+		}
+	}
+	e, ok := ls.m[key]
+	if !ok {
+		e = &limiterEntry{l: rate.NewLimiter(ls.limit, ls.burst)}
+		ls.m[key] = e
+	}
+	e.seen = now
+	return e.l.Allow()
+}
+
+type actorKey struct{}
+
+// identify resolves who sent r via Tailscale WhoIs, falling back to the IP.
+func (s *Server) identify(r *http.Request) (store.Actor, whois.Identity, error) {
+	ip, _ := peerIP(r)
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	id, err := s.who.WhoIs(ctx, r.RemoteAddr)
+	if err != nil && !errors.Is(err, whois.ErrUnknown) {
+		s.log.Warn("whois failed; attributing by IP", "remote", r.RemoteAddr, "err", err)
+	}
+	return store.Actor{Login: id.Login, Node: id.Node, IP: ip.String()}, id, err
+}
+
+// write wraps a mutating handler: it attributes the request to an actor and
+// applies the per-actor write rate limit.
+func (s *Server) write(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		a, _, _ := s.identify(r)
+		key := "ip:" + a.IP
+		if a.Node != "" {
+			key = "node:" + a.Node
+		}
+		if !s.writes.allow(key) {
+			w.Header().Set("Retry-After", "10")
+			http.Error(w, "too many changes; slow down", http.StatusTooManyRequests)
+			return
+		}
+		h(w, r.WithContext(context.WithValue(r.Context(), actorKey{}, a)))
+	}
+}
+
+func actorFrom(r *http.Request) store.Actor {
+	a, _ := r.Context().Value(actorKey{}).(store.Actor)
+	return a
+}

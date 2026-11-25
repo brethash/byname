@@ -1,0 +1,36 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>{{.Title}} · {{host}}/</title>
+<link rel="stylesheet" href="/_/static/style.css?v={{.Version}}">
+<link rel="icon" href="/_/static/favicon.svg" type="image/svg+xml">
+<link rel="search" type="application/opensearchdescription+xml" title="{{host}}/" href="/_/opensearch.xml">
+<script src="/_/static/app.js?v={{.Version}}" defer></script>
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/">{{host}}<span>/</span></a>
+  <form class="search" action="/_/links" method="get" role="search">
+    <input type="search" name="q" value="{{.Query}}" placeholder="Search links  ( / )" aria-label="Search links" autocomplete="off">
+  </form>
+  <nav>
+    <a href="/_/links">All</a>
+    <a href="/_/activity">Activity</a>
+    <a class="btn primary" href="/_/new">New</a>
+  </nav>
+</header>
+<main>
+{{template "content" .}}
+</main>
+<footer>
+  <span>{{host}}/ {{.Version}}</span> ·
+  <a href="/_/export">Export</a> ·
+  <a href="/_/links?deleted=1">Deleted</a> ·
+  <a href="/_/whoami">Who am I?</a>
+</footer>
+</body>
+</html>{{end}}

@@ -1,0 +1,11 @@
+{{define "content"}}
+<section class="hero">
+  <h1><code>{{host}}/{{.Missing}}</code> doesn't exist yet</h1>
+  <p class="muted">Create it and it works for everyone on the tailnet.</p>
+</section>
+{{with .Suggestions}}<section><h2>Did you mean</h2>{{template "compactlist" .}}</section>{{end}}
+<section>
+  <h2>Create it</h2>
+  {{template "linkform" .}}
+</section>
+{{end}}

@@ -1,0 +1,27 @@
+{{define "content"}}
+<div class="list-head">
+  <h1>{{.Title}}{{if .Query}} matching “{{.Query}}”{{end}}</h1>
+  <nav class="sorts" aria-label="Sort">
+    Sort:
+    <a href="/_/links?q={{.Query}}&sort=name{{if .ShowDeleted}}&deleted=1{{end}}"{{if eq .Sort "name"}} aria-current="true"{{end}}>name</a>
+    <a href="/_/links?q={{.Query}}&sort=popular{{if .ShowDeleted}}&deleted=1{{end}}"{{if eq .Sort "popular"}} aria-current="true"{{end}}>popular</a>
+    <a href="/_/links?q={{.Query}}&sort=recent{{if .ShowDeleted}}&deleted=1{{end}}"{{if eq .Sort "recent"}} aria-current="true"{{end}}>updated</a>
+    <a href="/_/links?q={{.Query}}&sort=created{{if .ShowDeleted}}&deleted=1{{end}}"{{if eq .Sort "created"}} aria-current="true"{{end}}>created</a>
+    · {{if .ShowDeleted}}<a href="/_/links">live links</a>{{else}}<a href="/_/links?deleted=1">deleted links</a>{{end}}
+  </nav>
+</div>
+{{if .Links}}
+<div class="scroll"><table class="links">
+<thead><tr><th>Link</th><th>Destination</th><th class="num">Clicks</th><th>Updated</th></tr></thead>
+<tbody>{{range .Links}}
+<tr>
+  <td><a href="/_/links/{{.ID}}">{{host}}/{{.Name}}</a>{{with .Description}}<div class="muted small">{{trunc . 80}}</div>{{end}}</td>
+  <td class="target"><code>{{trunc .Target 90}}</code></td>
+  <td class="num">{{.Clicks}}</td>
+  <td title="{{when .UpdatedAt}}">{{ago .UpdatedAt}}<div class="muted small">{{.UpdatedBy}}</div></td>
+</tr>{{end}}
+</tbody></table></div>
+{{else}}
+<p class="muted">No links{{if .Query}} match “{{.Query}}”{{end}}.{{if and .Query (not .ShowDeleted)}} <a href="/_/new?name={{.Query}}">Create {{host}}/{{.Query}}</a>{{end}}</p>
+{{end}}
+{{end}}

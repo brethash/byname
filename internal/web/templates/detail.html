@@ -1,0 +1,41 @@
+{{define "content"}}
+{{with .Link}}
+<section class="card detail">
+  <div class="detail-head">
+    <h1>{{host}}/{{.Name}}</h1>
+    {{if .Deleted}}<span class="tag tag-delete">deleted {{ago .DeletedAt}}</span>{{end}}
+  </div>
+  {{with .Description}}<p>{{.}}</p>{{end}}
+  <dl>
+    <dt>Destination</dt>
+    <dd>{{if isTemplate .Target}}<code class="wrap">{{.Target}}</code><div class="hint">Template — try <code>{{host}}/{{.Name}}/something</code></div>{{else}}<a href="{{.Target}}" rel="noreferrer noopener"><code class="wrap">{{.Target}}</code></a>{{end}}</dd>
+    <dt>Clicks</dt><dd>{{.Clicks}}{{if not .LastClick.IsZero}} · last {{ago .LastClick}}{{end}}</dd>
+    <dt>Created</dt><dd>{{when .CreatedAt}} by {{.CreatedBy}}</dd>
+    <dt>Updated</dt><dd>{{when .UpdatedAt}} by {{.UpdatedBy}}</dd>
+  </dl>
+  <div class="actions">
+  {{if .Deleted}}
+    <form method="post" action="/_/links/{{.ID}}/restore"><button class="btn primary" type="submit">Restore</button></form>
+  {{else}}
+    <a class="btn primary" href="/{{.Name}}">Open</a>
+    <a class="btn" href="/_/links/{{.ID}}/edit">Edit</a>
+    <form method="post" action="/_/links/{{.ID}}/delete" data-confirm="Delete {{host}}/{{.Name}}? It can be restored later."><button class="btn danger" type="submit">Delete</button></form>
+  {{end}}
+  </div>
+</section>
+{{end}}
+<section>
+  <h2>History</h2>
+  <div class="scroll"><table class="events">
+  <thead><tr><th>When</th><th>Who</th><th>What</th><th>Change</th><th></th></tr></thead>
+  <tbody>{{range .Events}}
+  <tr>
+    <td title="{{when .At}}">{{ago .At}}</td>
+    <td>{{template "actor" .Actor}}</td>
+    <td><span class="tag tag-{{.Action}}">{{.Action}}</span></td>
+    <td>{{template "change" .}}</td>
+    <td>{{if and .After (not (sameFields .After $.Link))}}<form method="post" action="/_/events/{{.ID}}/revert" data-confirm="Set {{host}}/{{$.Link.Name}} back to this version?"><button class="btn small" type="submit">Restore this version</button></form>{{end}}</td>
+  </tr>{{end}}
+  </tbody></table></div>
+</section>
+{{end}}
