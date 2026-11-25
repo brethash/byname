@@ -1,127 +1,185 @@
 # byname
 
-Short links by name, for a household or a small team: `nym/wiki`,
-`nym/gh/octocat`. They're
-served from a Raspberry Pi 3B at home or from a $3.50–$5.00/month cloud
-server. People reach them on any of three paths:
+Short links by name, for a household or a small team. Type `nym/wiki` in any
+browser and land on your wiki. Type `nym/gh/octocat` and land on
+`https://github.com/octocat`. Everyone shares one list that anyone allowed in
+can add to, and every change is recorded and can be undone.
 
-- your tailnet;
-- your home network;
-- your own domain on the internet (`https://hg.example.com/wiki`), with
-  Slack or Google sign-in.
+byname is self-hosted: one small Go program with a SQLite database, running on
+a Raspberry Pi at home or a $5/month cloud server.
 
-Tailscale is optional.
+## Who can use it
 
-`nym` is the default prefix people type. Choose your own (`go/wiki`,
-`hg/wiki`) with one setting: `bootstrap.sh --name hg`, or `name = "hg"` in
-`deploy/cloud`.
+People reach byname in up to three ways, and you choose which ones are on.
 
-- **On the tailnet, no logins.** Tailscale MagicDNS resolves `nym` on every
-  device running Tailscale, and WireGuard encrypts that traffic. Anyone on
-  the tailnet can create or edit a link. Every change records who made it
-  (Tailscale WhoIs), and any earlier version can be restored with one click.
-- **On the home network, optionally.** With `--lan-access` on a Pi,
-  home-network devices without Tailscale can use it too, over plain HTTP and
-  identified by IP address; router DNS resolves `nym` for them.
-- **On the internet, with sign-in.** Serve your own domain
-  (`https://hg.example.com`, Let's Encrypt certificate; no Tailscale needed),
-  or publish the tailnet name through Tailscale Funnel. People there sign in
-  with Google or Slack, only accounts on your allow list get in, and the
-  history records the account ([docs/public-access.md](docs/public-access.md)).
-- **Small and boring to run.** One static Go binary, SQLite, about 30 MB of RAM,
-  near-zero disk writes when idle, automatic OS updates, and hourly
-  snapshots to S3.
+| Path | Address people use | Sign-in |
+|---|---|---|
+| **Your own domain** | `https://hg.example.com/wiki`, from any browser anywhere | Slack or Google; only accounts on your allow list |
+| **Your tailnet** (Tailscale) | `nym/wiki` on devices running Tailscale | none: Tailscale identifies each person and device |
+| **Your home network** (Pi only) | `nym/wiki` on home Wi-Fi | none; changes are recorded by IP address |
 
-## Using it
+Tailscale is optional. With your own domain and Slack sign-in, a server needs
+nothing else.
 
-| You type | You get |
-|---|---|
-| `nym/` | home: search, create, popular, recent changes |
-| `nym/wiki` | redirect to the link's destination |
-| `nym/wiki/some/page?x=1` | the destination with `/some/page?x=1` appended |
-| `nym/gh/octocat` | template `https://github.com/{1}` → `https://github.com/octocat` |
-| `nym/wiki+` | the link's details and history, without redirecting |
-| `nym/nope` | "doesn't exist yet", with a create form |
+`nym` is the default prefix people type. Choose your own with one setting:
+`--name hg` makes it `hg/wiki`.
 
-Browser setup notes: [docs/client-setup.md](docs/client-setup.md).
+## Features
 
-## Developing
+**Links**
 
-Needs Go 1.25+ (for `net/http.CrossOriginProtection`) and shellcheck.
+- `nym/wiki` redirects to the link's destination. Anything after the name is
+  passed on: `nym/wiki/some/page?x=1` goes to the destination with
+  `/some/page?x=1` appended.
+- Templates: a destination like `https://github.com/{1}` makes `nym/gh/octocat`
+  go to `https://github.com/octocat`. `{1}`…`{9}` and `{*}` are available, and
+  a placeholder can never change the host.
+- Names ignore case, dashes and underscores, so `nym/Wiki-Home` and
+  `nym/wikihome` are the same link.
+- `nym/wiki+` shows a link's details and history instead of redirecting.
+- A name that doesn't exist yet opens a "create it" form with suggestions.
+- The home page has search, popular links, the newest links and recent
+  changes. Browsers can add byname as a search engine.
+
+**Accountability without admins**
+
+- Every change is recorded with who made it: the Tailscale user and device,
+  the Slack or Google account, or the IP address on a home network.
+- The history can't be rewritten: the database itself refuses edits and
+  deletions of it.
+- Any earlier version of a link can be restored with one click. Deleted
+  links can be restored too.
+- Editing limits per device and per account stop runaway scripts.
+
+**Sign-in for the internet**
+
+- Google and Slack (OpenID Connect). Allow specific Google accounts or whole
+  Google Workspace domains, or members of specific Slack workspaces.
+- With one provider configured, people go straight to it.
+- `byname sessions` lists who is signed in; `byname sessions revoke` signs
+  someone out everywhere.
+
+**Small and low-maintenance**
+
+- One static binary, about 30 MB of memory, and almost no disk writes when
+  idle.
+- Automatic OS and security updates on the server.
+- A daily database snapshot (and one before every deploy), uploaded to a
+  versioned S3 bucket with a key that can only add files.
+- Deploys check the new version's health and roll back on their own if it
+  fails.
+- JSON export and import, and a small JSON API.
+
+## Deploying
+
+### Choose a host
+
+| Host | Per month | Good for |
+|---|---|---|
+| AWS Lightsail with your own domain | $5.00 | a team or family anywhere, with Slack or Google sign-in; no Tailscale needed |
+| AWS Lightsail, Tailscale only | $3.50 | a household that already uses Tailscale |
+| Raspberry Pi 3B at home | about $0.30 of electricity | Tailscale devices plus, optionally, everything on the home network |
+| Hetzner Cloud | €5.99 and up | either cloud setup, if you'd rather not use AWS |
+
+Prices as of 2026-11-24. The cloud servers are created with OpenTofu from
+[`deploy/cloud`](deploy/cloud). Every host is a Debian 13 machine set up by the
+same scripts.
+
+### The steps
+
+Every deployment follows the same five steps.
+
+1. **Create the server.** For the cloud, run `tofu apply` in
+   `deploy/cloud/aws` (or `hetzner`). For a Pi, flash Raspberry Pi OS Lite.
+2. **Point a name at it.** For your own domain, add an A and an AAAA record
+   at your DNS host (`tofu output dns_records` prints them). With Tailscale,
+   the server joins your tailnet as `nym`.
+3. **Harden it.** Run `deploy/host/bootstrap.sh` on the server. It sets up a
+   default-deny firewall, key-only SSH, automatic updates and the systemd
+   sandbox. Flags choose the paths above: `--no-tailscale`,
+   `--public-domain hg.example.com`, `--lan-access`, `--funnel`.
+4. **Deploy.** Run `make deploy TARGET=admin@hg.example.com` from your Mac. It
+   runs the tests, builds the binary for the server's CPU, uploads it,
+   switches over and checks its health.
+5. **Verify.** Run `byname-verify` on the server. It checks the firewall,
+   sandbox, sign-in, certificate and backups, and lists the checks to run
+   from other devices.
+
+For example, the whole setup for your own domain with Slack sign-in and no
+Tailscale looks like this, run from the repo root:
 
 ```sh
-make run      # http://localhost:8080, dev mode (localhost allowed, no WhoIs)
-make gate     # vet, staticcheck, race tests, govulncheck, shellcheck
-make fuzz     # fuzz URL validation and template expansion
+# deploy/cloud/aws/terraform.tfvars: name, public_domain, ipv4 = true, ssh_cidrs (see docs/cloud.md)
+cd deploy/cloud/aws && tofu init && tofu apply && tofu output dns_records && cd -   # then add the DNS records
+scp -r deploy admin@hg.example.com:
+ssh admin@hg.example.com 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
+  --no-tailscale --ssh-from any'
+# add BYNAME_SLACK_CLIENT_ID / BYNAME_SLACK_TEAMS and the Slack secret (docs/public-access.md)
+ssh admin@hg.example.com 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
+  --no-tailscale --ssh-from any --public-domain hg.example.com'
+make deploy TARGET=admin@hg.example.com
+ssh admin@hg.example.com sudo byname-verify
+```
+
+Updates are one command: `make deploy TARGET=…` from `master`.
+
+### Guides
+
+| Guide | Covers |
+|---|---|
+| [docs/cloud.md](docs/cloud.md) | AWS Lightsail and Hetzner: costs, a step-by-step walkthrough with your own domain, the Tailscale variant, moving between hosts |
+| [docs/public-access.md](docs/public-access.md) | your own domain or Tailscale Funnel; setting up Slack and Google sign-in; managing who can sign in |
+| [docs/operations.md](docs/operations.md) | the Raspberry Pi from scratch, deploys and rollback, S3 backups and restores, troubleshooting |
+| [docs/client-setup.md](docs/client-setup.md) | making `nym/wiki` work in each browser and device |
+| [docs/security-review.md](docs/security-review.md) | the security reviews: what was found, what was fixed, which risks are accepted |
+
+## Security in brief
+
+- **Plain-HTTP address (tailnet and LAN):**
+  - Only peers on the tailnet (or the home LAN, if enabled) are accepted.
+  - The `Host` header must be one of byname's names, which blocks DNS
+    rebinding.
+  - Every write must come from byname's own pages, enforced with Go's
+    cross-origin protection.
+- **Public address:**
+  - Everything but the sign-in pages needs a session from an allow-listed
+    account.
+  - Sessions are kept on the server, in `__Host-` cookies that are Secure,
+    HttpOnly and SameSite=Lax.
+  - On your own domain, byname terminates TLS itself. It trusts no proxy
+    headers, and limits connections per address.
+- **Destinations** must be plain `http(s)` URLs with no embedded credentials.
+  Redirects are never cached, so edits take effect at once.
+- **On the host:**
+  - The service runs as its own user under a strict systemd sandbox, behind a
+    default-deny firewall and, in the cloud, the provider's firewall.
+  - The cloud firewall opens only the ports the chosen setup needs.
+  - The backup key can only add objects to S3.
+
+Details, findings and accepted risks: [docs/security-review.md](docs/security-review.md).
+
+## Development
+
+Needs Go 1.25 or later and shellcheck; OpenTofu and the AWS CLI for cloud
+deployments.
+
+```sh
+make run          # http://localhost:8080 in dev mode
+make gate         # vet, staticcheck, race tests, govulncheck, shellcheck
+make fuzz         # fuzz URL validation and template expansion
+make cloud-check  # tofu fmt + validate for both cloud stacks
 ```
 
 ```
 cmd/byname/        serve | snapshot | backup | export | import | sessions | version
-internal/link/     names, destination validation, template expansion (+ fuzz tests)
-internal/store/    SQLite: links, append-only audit log, snapshots
-internal/app/      validation, click batching, snapshot scheduling
-internal/web/      middleware, handlers, templates, JSON API, public (Funnel) address
+internal/link/     names, destination validation, template expansion
+internal/store/    SQLite: links, append-only history, sessions, snapshots
+internal/app/      validation, click counting, snapshot scheduling
+internal/web/      HTTP: middleware, pages, JSON API, the public address
 internal/auth/     Google and Slack sign-in (OpenID Connect)
-internal/whois/    tailscaled LocalAPI WhoIs client
+internal/whois/    Tailscale identity lookups
 internal/backup/   S3 upload of the newest snapshot
-deploy/host/       bootstrap (Pi or cloud), firewall, install/verify/restore scripts
-deploy/systemd/    units
-deploy/cloud/      OpenTofu for AWS Lightsail and Hetzner, plus the first-boot script
+deploy/host/       bootstrap, firewall, install, verify and restore scripts
+deploy/systemd/    service units
+deploy/cloud/      OpenTofu for AWS Lightsail and Hetzner, plus first boot
 ```
-
-## Where to run it
-
-| Host | Cost per month | Who can use it |
-|---|---|---|
-| Raspberry Pi at home | about $0.30 of electricity | tailnet devices, and optionally home-network devices without Tailscale |
-| AWS Lightsail with your own domain ([docs/cloud.md](docs/cloud.md)) | $5.00 | anyone who signs in with Slack or Google; tailnet devices too if you add Tailscale |
-| AWS Lightsail, IPv6-only, Tailscale ([docs/cloud.md](docs/cloud.md)) | $3.50 | tailnet devices |
-| Hetzner Cloud, cheapest type in stock ([docs/cloud.md](docs/cloud.md)) | €5.99–€17.99, plus IPv4 for a domain | either of the above |
-
-Prices as of 2026-11-24. [docs/operations.md](docs/operations.md) covers Pi
-setup, deploys with automatic rollback, S3 backups and restores, and
-troubleshooting. [docs/cloud.md](docs/cloud.md) covers the cloud servers and
-moving between hosts.
-
-```sh
-make deploy TARGET=<you>@nym      # builds arm64 + amd64, ships the one the host needs
-```
-
-## Security
-
-Every request on the plain-HTTP address passes these checks before any
-handler runs:
-
-1. the peer must be a tailnet address (or the home LAN with `--lan-access`);
-2. `Host` must be one of `BYNAME_HOSTS` (blocks DNS rebinding);
-3. request size limits;
-4. `Origin` must match on every write (Go's `CrossOriginProtection`);
-5. strict CSP and related headers on every response;
-6. write limits per device or signed-in account, a short-term rate and a
-   daily budget; devices without Tailscale share one budget.
-
-Destinations must be plain `http(s)` URLs with no embedded credentials,
-backslashes or look-alike Unicode. Template placeholders can never change the
-host. Redirects are always `302` with `no-store`, so edits take effect
-immediately. The JSON API requires `application/json`, so browsers must send
-a CORS preflight, which is never granted.
-
-On the optional public address, everything except the sign-in pages needs a
-session from an allow-listed Google or Slack account. Sessions are
-server-side, in `__Host-` cookies that are Secure, HttpOnly and
-SameSite=Lax.
-
-- **Your own domain**: byname terminates TLS itself, with a Let's Encrypt
-  certificate for that one name. It trusts no proxy headers, and treats
-  every request there as coming from the internet.
-- **Funnel**: requests arrive over a socket that only Tailscale can open, and
-  tailnet devices are recognised and skip sign-in.
-
-On the host, the service runs under a tight systemd sandbox: read-only
-system, syscall filter, only `CAP_NET_BIND_SERVICE`, and only tailnet peers
-allowed. It sits behind a default-drop firewall; cloud servers also sit
-behind the provider's firewall, with no public port except Tailscale's. The
-AWS key exists only in the backup unit and can only add objects.
-
-The OWASP review, including what it fixed and the risks accepted, is in
-[docs/security-review.md](docs/security-review.md).
