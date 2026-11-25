@@ -1,6 +1,7 @@
 package web
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"log/slog"
@@ -185,30 +186,28 @@ func limits(next http.Handler) http.Handler {
 // limiterSet holds two token buckets per key (device, account or address): a
 // short-term rate (stops bursts) and a daily budget (bounds how fast a
 // compromised device could grow the append-only audit log and fill the SD
-// card). Memory is bounded: idle keys are dropped once both their buckets
-// would be full again, and past maxKeys new keys share one overflow bucket.
+// card). Memory is bounded: entries are kept in least-recently-used order,
+// dropped once idle long enough that both buckets would be full again, and
+// past maxKeys the least recently used entry makes room. Every key always
+// gets a bucket of its own, so nobody can exhaust a shared one.
 type limiterSet struct {
-	mu        sync.Mutex
-	limit     rate.Limit // short-term rate; <= 0 disables
-	burst     int
-	daily     int           // per key per 24 h; <= 0 disables
-	idle      time.Duration // after this long unused, an entry is as good as new
-	maxKeys   int
-	lastSweep time.Time
-	m         map[string]*limiterEntry
+	mu      sync.Mutex
+	limit   rate.Limit // short-term rate; <= 0 disables
+	burst   int
+	daily   int           // per key per 24 h; <= 0 disables
+	idle    time.Duration // after this long unused, an entry is as good as new
+	maxKeys int
+	m       map[string]*list.Element // values are *limiterEntry
+	lru     *list.List               // front: most recently used
 }
 
 type limiterEntry struct {
+	key        string
 	short, day *rate.Limiter
 	seen       time.Time
 }
 
-const (
-	limiterMaxKeys    = 10000
-	limiterSweepAt    = 1000
-	limiterSweepEvery = 10 * time.Second
-	overflowKey       = "\x00overflow"
-)
+const limiterMaxKeys = 10000
 
 func newLimiterSet(limit rate.Limit, burst, daily int) *limiterSet {
 	idle := time.Minute
@@ -219,35 +218,39 @@ func newLimiterSet(limit rate.Limit, burst, daily int) *limiterSet {
 		idle = time.Duration(float64(burst)/float64(limit)*float64(time.Second)) + time.Second
 	}
 	return &limiterSet{limit: limit, burst: burst, daily: daily, idle: idle,
-		maxKeys: limiterMaxKeys, m: make(map[string]*limiterEntry)}
+		maxKeys: limiterMaxKeys, m: make(map[string]*list.Element), lru: list.New()}
+}
+
+func (ls *limiterSet) remove(el *list.Element) {
+	ls.lru.Remove(el)
+	delete(ls.m, el.Value.(*limiterEntry).key)
 }
 
 func (ls *limiterSet) allow(key string) bool {
 	now := time.Now()
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	if len(ls.m) >= limiterSweepAt && now.Sub(ls.lastSweep) >= limiterSweepEvery {
-		ls.lastSweep = now
-		for k, e := range ls.m {
-			if now.Sub(e.seen) > ls.idle {
-				delete(ls.m, k)
-			}
+	// The back of the list is the least recently used, so idle entries are
+	// all there: dropping them costs only as many steps as there are.
+	for el := ls.lru.Back(); el != nil && now.Sub(el.Value.(*limiterEntry).seen) > ls.idle; el = ls.lru.Back() {
+		ls.remove(el)
+	}
+	var e *limiterEntry
+	if el, ok := ls.m[key]; ok {
+		e = el.Value.(*limiterEntry)
+		ls.lru.MoveToFront(el)
+	} else {
+		if ls.lru.Len() >= ls.maxKeys {
+			ls.remove(ls.lru.Back())
 		}
-	}
-	e, ok := ls.m[key]
-	if !ok && len(ls.m) >= ls.maxKeys {
-		key = overflowKey
-		e, ok = ls.m[key]
-	}
-	if !ok {
-		e = &limiterEntry{}
+		e = &limiterEntry{key: key}
 		if ls.limit > 0 {
 			e.short = rate.NewLimiter(ls.limit, ls.burst)
 		}
 		if ls.daily > 0 {
 			e.day = rate.NewLimiter(rate.Limit(float64(ls.daily)/(24*60*60)), ls.daily)
 		}
-		ls.m[key] = e
+		ls.m[key] = ls.lru.PushFront(e)
 	}
 	e.seen = now
 	var dayRes *rate.Reservation

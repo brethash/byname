@@ -480,28 +480,39 @@ func TestAnonKey(t *testing.T) {
 }
 
 func TestLimiterMemoryBounded(t *testing.T) {
-	ls := newLimiterSet(rate.Limit(1), 30, 0)
+	ls := newLimiterSet(rate.Limit(1), 3, 0)
 	if ls.idle > time.Minute {
 		t.Fatalf("anonymous entries kept %v after going idle", ls.idle)
 	}
 	ls.maxKeys = 50
+	// A regular visitor keeps using their bucket while an attacker cycles
+	// through far more addresses than fit, draining each one.
 	for i := range 500 {
-		ls.allow("ip:" + strconv.Itoa(i))
+		if i%10 == 0 {
+			ls.allow("regular")
+		}
+		for range 5 {
+			ls.allow("attacker:" + strconv.Itoa(i))
+		}
 	}
-	if len(ls.m) > 51 {
-		t.Fatalf("%d entries, want at most maxKeys+1 (overflow)", len(ls.m))
+	if len(ls.m) > 50 || ls.lru.Len() != len(ls.m) {
+		t.Fatalf("%d entries (list %d), want at most 50", len(ls.m), ls.lru.Len())
 	}
-	// Idle entries are swept (at most every limiterSweepEvery).
-	ls = newLimiterSet(rate.Limit(1), 30, 0)
-	for i := range limiterSweepAt + 10 {
-		ls.allow("ip:" + strconv.Itoa(i))
+	if _, ok := ls.m["regular"]; !ok {
+		t.Error("a recently used entry was evicted before idle ones")
 	}
-	for _, e := range ls.m {
-		e.seen = e.seen.Add(-time.Hour)
+	// A newcomer while the table is full gets a fresh bucket of its own, not
+	// one the attacker has drained.
+	if !ls.allow("newcomer") {
+		t.Error("a new address was refused because the table was full")
 	}
-	ls.lastSweep = time.Time{}
+
+	// Idle entries are dropped.
+	for _, el := range ls.m {
+		el.Value.(*limiterEntry).seen = time.Now().Add(-time.Hour)
+	}
 	ls.allow("fresh")
-	if len(ls.m) != 1 {
-		t.Fatalf("%d entries after a sweep, want 1", len(ls.m))
+	if len(ls.m) != 1 || ls.lru.Len() != 1 {
+		t.Fatalf("%d entries after going idle, want 1", len(ls.m))
 	}
 }

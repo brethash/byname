@@ -492,7 +492,7 @@ func TestShortLimitRefundsDailyBudget(t *testing.T) {
 	if ls.allow("k") { // short bucket empty: refused, daily refunded
 		t.Fatal("second write allowed despite short limit")
 	}
-	e := ls.m["k"]
+	e := ls.m["k"].Value.(*limiterEntry)
 	if got := e.day.Tokens(); got < 0.99 {
 		t.Fatalf("daily budget not refunded: %.2f tokens left", got)
 	}
