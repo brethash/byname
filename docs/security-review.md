@@ -207,7 +207,7 @@ on the host.
 ## Without Tailscale: your own domain (2026-11-25)
 
 Tailscale is now optional. A server can serve its own domain directly
-(`bootstrap.sh --no-tailscale --public-domain hg.example.com`): byname terminates
+(`bootstrap.sh --no-tailscale --public-domain me.example.com`): byname terminates
 TLS with a Let's Encrypt certificate, and everyone signs in with Google or
 Slack. Sign-in, sessions, allow lists and the write limits are the ones
 reviewed above. What changes is the exposure.

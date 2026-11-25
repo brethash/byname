@@ -9,7 +9,7 @@ There are two ways to publish it. **Tailscale is optional** for the first.
 
 | | Your own domain (`--public-domain`) | Tailscale Funnel (`--funnel`) |
 |---|---|---|
-| Address | `https://hg.example.com/wiki` | `https://me.<tailnet>.ts.net/wiki` |
+| Address | `https://me.example.com/wiki` | `https://me.<tailnet>.ts.net/wiki` |
 | Needs Tailscale | no | yes |
 | Who signs in | everyone using the address | everyone except tailnet devices |
 | Open ports on the server | TCP 80 and 443 (and 22 from your addresses, without Tailscale) | none |
@@ -23,7 +23,7 @@ Either way:
   with `--lan-access`, so can home-network devices.
 - **People on the internet see the full address.** They don't have the short
   `me/` name (that needs Tailscale), so byname's pages show them links as
-  `hg.example.com/wiki`.
+  `me.example.com/wiki`.
 - **One provider means no button page.** With only one provider configured,
   people go straight to Google or Slack. After signing out, they stay on the
   sign-in page.
@@ -55,7 +55,7 @@ Either way:
 2. At your DNS host, point the name at the server: an `A` record for its
    IPv4 address and an `AAAA` record for its IPv6 address. `tofu output
    dns_records` prints both. Use a short TTL (5 minutes) at first.
-3. Wait until `dig +short hg.example.com` returns those addresses. byname asks
+3. Wait until `dig +short me.example.com` returns those addresses. byname asks
    Let's Encrypt for a certificate on the first HTTPS visit. Let's Encrypt
    checks that the name points at this server, through port 80 or 443.
 
@@ -78,7 +78,7 @@ the admin console under Machines, for example `https://me.tail1234.ts.net`.
 ## 2. Sign-in providers
 
 Set up one or both. Each needs a redirect URL containing your public address.
-Below, `https://<address>` is `https://hg.example.com` or
+Below, `https://<address>` is `https://me.example.com` or
 `https://me.<tailnet>.ts.net`.
 
 ### Slack
@@ -173,7 +173,7 @@ DOMAIN` or `--funnel`:
 ```sh
 # your own domain, no Tailscale (a cloud server):
 ssh admin@SERVER 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
-  --no-tailscale --ssh-from any --public-domain hg.example.com'
+  --no-tailscale --ssh-from any --public-domain me.example.com'
 # or Tailscale Funnel:
 ssh admin@me 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name me --funnel'
 

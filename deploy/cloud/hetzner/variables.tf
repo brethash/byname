@@ -31,7 +31,7 @@ variable "tailscale" {
 
 variable "public_domain" {
   description = <<-EOT
-    Your own domain for the service, e.g. "hg.example.com". byname serves it directly over HTTPS with
+    Your own domain for the service, e.g. "me.example.com". byname serves it directly over HTTPS with
     a Let's Encrypt certificate, and everyone outside the tailnet signs in with Google or Slack
     (docs/public-access.md). Opens TCP 80 and 443 to the internet and needs ipv4 = true. Point
     the domain's A and AAAA records at the addresses in the outputs.
@@ -41,7 +41,7 @@ variable "public_domain" {
 
   validation {
     condition     = var.public_domain == "" || can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$", var.public_domain))
-    error_message = "public_domain must be a lower-case DNS name like hg.example.com (no scheme, no path)."
+    error_message = "public_domain must be a lower-case DNS name like me.example.com (no scheme, no path)."
   }
 }
 

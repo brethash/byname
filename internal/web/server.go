@@ -55,7 +55,7 @@ type Config struct {
 	// (https://me.<tailnet>.ts.net) published by Tailscale Funnel, which
 	// proxies to byname over a private socket; byname trusts tailscaled's forwarding
 	// headers there, and tailnet devices skip sign-in. Without it, byname serves
-	// its own domain (https://hg.example.com) with TLS directly: no header is
+	// its own domain (https://me.example.com) with TLS directly: no header is
 	// trusted and every request counts as coming from the internet.
 	PublicURL             string
 	PublicBehindTailscale bool
@@ -166,7 +166,7 @@ func (s *Server) setupPublic() error {
 	u, err := url.Parse(cfg.PublicURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
 		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("public URL %q: want https://host, e.g. https://hg.example.com or https://me.<tailnet>.ts.net", cfg.PublicURL)
+		return fmt.Errorf("public URL %q: want https://host, e.g. https://me.example.com or https://me.<tailnet>.ts.net", cfg.PublicURL)
 	}
 	if len(cfg.Providers) == 0 {
 		return errors.New("a public URL needs at least one sign-in provider (Google or Slack)")

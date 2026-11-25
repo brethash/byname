@@ -14,7 +14,7 @@ People reach byname in up to three ways, and you choose which ones are on.
 
 | Path | Address people use | Sign-in |
 |---|---|---|
-| **Your own domain** | `https://hg.example.com/wiki`, from any browser anywhere | Slack or Google; only accounts on your allow list |
+| **Your own domain** | `https://me.example.com/wiki`, from any browser anywhere | Slack or Google; only accounts on your allow list |
 | **Your tailnet** (Tailscale) | `me/wiki` on devices running Tailscale | none: Tailscale identifies each person and device |
 | **Your home network** (Pi only) | `me/wiki` on home Wi-Fi | none; changes are recorded by IP address |
 
@@ -97,8 +97,8 @@ Every deployment follows the same five steps.
 3. **Harden it.** Run `deploy/host/bootstrap.sh` on the server. It sets up a
    default-deny firewall, key-only SSH, automatic updates and the systemd
    sandbox. Flags choose the paths above: `--no-tailscale`,
-   `--public-domain hg.example.com`, `--lan-access`, `--funnel`.
-4. **Deploy.** Run `make deploy TARGET=admin@hg.example.com` from your Mac. It
+   `--public-domain me.example.com`, `--lan-access`, `--funnel`.
+4. **Deploy.** Run `make deploy TARGET=admin@me.example.com` from your Mac. It
    runs the tests, builds the binary for the server's CPU, uploads it,
    switches over and checks its health.
 5. **Verify.** Run `byname-verify` on the server. It checks the firewall,
@@ -111,14 +111,14 @@ Tailscale looks like this, run from the repo root:
 ```sh
 # deploy/cloud/aws/terraform.tfvars: name, public_domain, ipv4 = true, ssh_cidrs (see docs/cloud.md)
 cd deploy/cloud/aws && tofu init && tofu apply && tofu output dns_records && cd -   # then add the DNS records
-scp -r deploy admin@hg.example.com:
-ssh admin@hg.example.com 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
+scp -r deploy admin@me.example.com:
+ssh admin@me.example.com 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
   --no-tailscale --ssh-from any'
 # add BYNAME_SLACK_CLIENT_ID / BYNAME_SLACK_TEAMS and the Slack secret (docs/public-access.md)
-ssh admin@hg.example.com 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
-  --no-tailscale --ssh-from any --public-domain hg.example.com'
-make deploy TARGET=admin@hg.example.com
-ssh admin@hg.example.com sudo byname-verify
+ssh admin@me.example.com 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
+  --no-tailscale --ssh-from any --public-domain me.example.com'
+make deploy TARGET=admin@me.example.com
+ssh admin@me.example.com sudo byname-verify
 ```
 
 Updates are one command: `make deploy TARGET=…` from `master`.

@@ -9,7 +9,7 @@
 #   cloud:  sudo deploy/host/bootstrap.sh --admin-user admin [--name me]
 #   cloud without Tailscale:
 #           sudo deploy/host/bootstrap.sh --admin-user admin --name hg --no-tailscale \
-#                --ssh-from 203.0.113.7/32 --public-domain hg.example.com
+#                --ssh-from 203.0.113.7/32 --public-domain me.example.com
 #
 # Public access, with Google or Slack sign-in (docs/public-access.md):
 # --public-domain serves your own domain directly; --funnel publishes the
@@ -59,7 +59,7 @@ usage: sudo bootstrap.sh --admin-user USER [--name NAME] [--platform pi|cloud]
                     A specific address here locks you out if your address changes.
 
 Public access (Google or Slack sign-in must be set up first: docs/public-access.md):
-  --public-domain   serve your own domain, e.g. hg.example.com, over HTTPS with a Let's
+  --public-domain   serve your own domain, e.g. me.example.com, over HTTPS with a Let's
                     Encrypt certificate. Opens TCP 80 and 443; its DNS must point here.
                     Everyone reaching it signs in (tailnet devices can still use NAME/).
   --funnel          publish https://NAME.<tailnet>.ts.net through Tailscale Funnel instead:
@@ -141,7 +141,7 @@ PUBLIC=0
 [[ $FUNNEL -eq 1 && $TAILSCALE -eq 0 ]] && die "--funnel needs Tailscale; use --public-domain without it"
 if [[ -n "$PUBLIC_DOMAIN" ]]; then
   [[ "$PUBLIC_DOMAIN" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]] ||
-    die "--public-domain must be a lower-case DNS name like hg.example.com (no https://, no path)"
+    die "--public-domain must be a lower-case DNS name like me.example.com (no https://, no path)"
   [[ "$PUBLIC_DOMAIN" != *.ts.net ]] || die "--public-domain can't be a ts.net name; use --funnel for that"
 fi
 if [[ -n "$SSH_FROM" && "$SSH_FROM" != any ]]; then

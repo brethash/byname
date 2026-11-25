@@ -6,7 +6,7 @@ and you can combine them:
 
 | | **Your own domain, no Tailscale** | **Tailscale** |
 |---|---|---|
-| People use | `https://hg.example.com/wiki`, after signing in with Slack or Google | `me/wiki` on devices running Tailscale, no sign-in |
+| People use | `https://me.example.com/wiki`, after signing in with Slack or Google | `me/wiki` on devices running Tailscale, no sign-in |
 | You administer it with | OpenSSH, open only to your own addresses (`ssh_cidrs`) | Tailscale SSH over the tailnet |
 | Open to the internet | TCP 80 and 443; TCP 22 from your addresses | nothing (only Tailscale's WireGuard port) |
 | Server | needs IPv4 ($5.00 on Lightsail) | IPv6-only is enough ($3.50) |
@@ -57,7 +57,7 @@ cheapest first), because the cheapest types are often out of stock.
 
 ## Your own domain, no Tailscale (walkthrough)
 
-This example runs the service as `hg` at `https://hg.example.com` with Slack
+This example runs the service as `hg` at `https://me.example.com` with Slack
 sign-in, on Lightsail. Hetzner works the same way with
 `deploy/cloud/hetzner`.
 
@@ -71,7 +71,7 @@ sign-in, on Lightsail. Hetzner works the same way with
   `ssh_cidrs` and run `tofu apply` again. With IPv4 on, `ssh_cidrs` needs at
   least one IPv4 block. You can add your home IPv6 prefix as well.
 - Access to your domain's DNS.
-- A Slack app. Its redirect URL is `https://hg.example.com/_/auth/slack/callback`
+- A Slack app. Its redirect URL is `https://me.example.com/_/auth/slack/callback`
   ([public-access.md → Slack](public-access.md#slack)).
 
 **2. Create the server.**
@@ -82,7 +82,7 @@ cat > terraform.tfvars <<'EOF'
 name           = "hg"
 region         = "us-west-2"
 ssh_public_key = "ssh-ed25519 AAAA... you@laptop"
-public_domain  = "hg.example.com"
+public_domain  = "me.example.com"
 ipv4           = true
 ssh_cidrs      = ["203.0.113.7/32"]
 EOF
@@ -101,35 +101,35 @@ stored rules let SSH in from the whole internet. To see the rules:
 **3. DNS.** At your DNS host, create the two records `dns_records` printed:
 
 ```
-hg.example.com  A     <static IPv4>
-hg.example.com  AAAA  <IPv6>
+me.example.com  A     <static IPv4>
+me.example.com  AAAA  <IPv6>
 ```
 
-Wait until `dig +short hg.example.com` shows them.
+Wait until `dig +short me.example.com` shows them.
 
 **4. Bootstrap, then configure sign-in, then turn on the domain.** Run these
 from the repo root. `tofu output -raw next_steps` prints them with your
 values filled in.
 
 ```sh
-scp -r deploy admin@hg.example.com:
-ssh admin@hg.example.com 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
+scp -r deploy admin@me.example.com:
+ssh admin@me.example.com 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
   --no-tailscale --ssh-from any'
 
-ssh admin@hg.example.com 'sudo tee -a /etc/byname/byname.local.env' <<'EOF'
+ssh admin@me.example.com 'sudo tee -a /etc/byname/byname.local.env' <<'EOF'
 BYNAME_SLACK_CLIENT_ID=1234567890.1234567890
 BYNAME_SLACK_TEAMS=T0123ABCD
 EOF
-pbpaste | ssh admin@hg.example.com 'sudo sh -c "umask 077; cat > /etc/credstore/byname.slack-client-secret"'
+pbpaste | ssh admin@me.example.com 'sudo sh -c "umask 077; cat > /etc/credstore/byname.slack-client-secret"'
 
-ssh admin@hg.example.com 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
-  --no-tailscale --ssh-from any --public-domain hg.example.com'
-make deploy TARGET=admin@hg.example.com
-ssh admin@hg.example.com sudo byname-verify
+ssh admin@me.example.com 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
+  --no-tailscale --ssh-from any --public-domain me.example.com'
+make deploy TARGET=admin@me.example.com
+ssh admin@me.example.com sudo byname-verify
 ```
 
 The `pbpaste` line sends the Slack client secret from your clipboard. The
-first visit to `https://hg.example.com` gets byname its certificate from Let's
+first visit to `https://me.example.com` gets byname its certificate from Let's
 Encrypt; `byname-verify` makes that visit for you.
 
 **5. Check from a phone**, as in [public-access.md](public-access.md#4-turn-it-on).

@@ -12,7 +12,7 @@ import (
 	"byname/internal/auth"
 )
 
-const directURL = "https://hg.example.com"
+const directURL = "https://me.example.com"
 
 // newDirectHarness is a server with no Tailscale at all: the private listener
 // only accepts localhost, and the public domain is served directly.
@@ -37,7 +37,7 @@ func (h *harness) direct(method, target, body string, opts ...reqOpt) *httptest.
 	}
 	r := httptest.NewRequest(method, directURL+target, rd)
 	r.RemoteAddr = "198.51.100.7:40000"
-	r.Host = "hg.example.com"
+	r.Host = "me.example.com"
 	for _, o := range opts {
 		o(r)
 	}
@@ -101,7 +101,7 @@ func TestDirectSignInFlow(t *testing.T) {
 		t.Fatalf("created by %q (%v)", l.CreatedBy, err)
 	}
 	home := h.direct("GET", "/", "", withCookie(sess)).Body.String()
-	if !strings.Contains(home, "https://hg.example.com/name") || strings.Contains(home, "Tailscale") {
+	if !strings.Contains(home, "https://me.example.com/name") || strings.Contains(home, "Tailscale") {
 		t.Errorf("home page without Tailscale: %.1200s", home)
 	}
 }
@@ -117,18 +117,18 @@ func TestPrivateOrRedirect(t *testing.T) {
 		return w
 	}
 	for target, want := range map[string]string{
-		"/wiki?x=1":                 "https://hg.example.com/wiki?x=1",
-		"/":                         "https://hg.example.com/",
-		"//evil.example/x":          "https://hg.example.com//evil.example/x",
-		"http:evil.example":         "https://hg.example.com/",
-		"http://evil.example/a?b=1": "https://hg.example.com/a?b=1",
+		"/wiki?x=1":                 "https://me.example.com/wiki?x=1",
+		"/":                         "https://me.example.com/",
+		"//evil.example/x":          "https://me.example.com//evil.example/x",
+		"http:evil.example":         "https://me.example.com/",
+		"http://evil.example/a?b=1": "https://me.example.com/a?b=1",
 	} {
-		w := get(target, "203.0.113.5:1000", "hg.example.com")
+		w := get(target, "203.0.113.5:1000", "me.example.com")
 		if w.Code != http.StatusMovedPermanently || w.Header().Get("Location") != want {
 			t.Errorf("%s: %d → %q, want 301 → %q", target, w.Code, w.Header().Get("Location"), want)
 		}
 	}
-	if w := get("/wiki", "203.0.113.5:1000", "hg.example.com"); w.Header().Get("Connection") != "close" {
+	if w := get("/wiki", "203.0.113.5:1000", "me.example.com"); w.Header().Get("Connection") != "close" {
 		t.Error("redirect doesn't close the connection")
 	}
 	// Localhost gets only the health check: a local proxy or tunnel that
@@ -166,7 +166,7 @@ func TestPrivateOrRedirectWithLAN(t *testing.T) {
 		}
 	}
 	// ...and are sent to https when they use the public name.
-	if w := get("/wiki", "192.168.1.20:5000", "hg.example.com"); w.Code != http.StatusMovedPermanently {
+	if w := get("/wiki", "192.168.1.20:5000", "me.example.com"); w.Code != http.StatusMovedPermanently {
 		t.Errorf("LAN peer on the public name: %d, want 301", w.Code)
 	}
 	if !h.srv.Trusted(netip.MustParseAddr("::ffff:192.168.1.20")) || h.srv.Trusted(netip.MustParseAddr("203.0.113.5")) {

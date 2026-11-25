@@ -165,7 +165,7 @@ func serve(args []string) error {
 	throttled := fs.String("throttled-path", defaultThrottled, `Raspberry Pi firmware get_throttled file ("" disables)`)
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
 	logFormat := fs.String("log-format", "text", "text or json")
-	publicURL := fs.String("public-url", "", "public https:// address, e.g. https://hg.example.com (served directly) or https://NAME.TAILNET.ts.net (through Tailscale Funnel); empty = no public address")
+	publicURL := fs.String("public-url", "", "public https:// address, e.g. https://me.example.com (served directly) or https://NAME.TAILNET.ts.net (through Tailscale Funnel); empty = no public address")
 	publicListen := fs.String("public-listen", "", `where the public address is served: ":443" to terminate TLS here with a Let's Encrypt certificate, or "unix:/path" for Tailscale Serve/Funnel to proxy to (default: unix:/run/byname/public.sock for a .ts.net address, :443 otherwise)`)
 	acmeDir := fs.String("acme-dir", "/var/lib/byname/acme", "where Let's Encrypt account keys and certificates are kept (direct public address only)")
 	acmeEmail := fs.String("acme-email", "", "optional contact address for Let's Encrypt expiry notices (direct public address only)")
