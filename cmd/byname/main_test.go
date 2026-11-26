@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"byname/internal/app"
 	"byname/internal/link"
@@ -72,5 +76,64 @@ func TestLinksToThePublicDomainAreRejected(t *testing.T) {
 	}
 	if got := selfHosts([]string{"me"}, ""); len(got) != 1 {
 		t.Errorf("selfHosts without a public address = %v", got)
+	}
+}
+
+// A click served while the server is shutting down must still reach the
+// database: background work (and its final flush) stops only after the
+// servers have finished their last requests.
+func TestShutdownFlushesClicksServedDuringShutdown(t *testing.T) {
+	st, _ := openStore(t)
+	svc := app.New(st, app.Config{ClickFlush: time.Hour, Logger: quiet})
+	l, err := svc.Create(context.Background(), app.Input{Name: "wiki", Target: "https://example.com"}, store.Actor{IP: "127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, stopRun := context.WithCancel(context.Background())
+	defer stopRun()
+	done := make(chan struct{})
+	go func() { svc.Run(runCtx); close(done) }()
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release // still serving while Shutdown waits
+		svc.RecordClick(l.ID)
+		w.WriteHeader(http.StatusFound)
+	})}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	reqDone := make(chan error, 1)
+	go func() {
+		c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		resp, err := c.Get("http://" + ln.Addr().String() + "/wiki")
+		if err == nil {
+			resp.Body.Close()
+		}
+		reqDone <- err
+	}()
+	<-entered
+
+	stopped := make(chan struct{})
+	go func() { stopServing(quiet, 5*time.Second, []*http.Server{srv}, stopRun, done); close(stopped) }()
+	select {
+	case <-done:
+		t.Fatal("background work stopped while a request was still being served")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	<-stopped
+	if err := <-reqDone; err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	got, err := st.GetByID(context.Background(), l.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Clicks != 1 {
+		t.Fatalf("clicks = %d, want 1: the click served during shutdown was lost", got.Clicks)
 	}
 }

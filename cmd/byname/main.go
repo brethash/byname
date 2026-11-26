@@ -31,6 +31,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -340,11 +341,17 @@ func serve(args []string) error {
 		ln = guard(ln, handler.Trusted, *maxConns, *maxPerPeer, log)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	// Background work (click flushing, snapshots) has its own context: it
+	// stops only after both servers have finished their last requests, so
+	// clicks counted during shutdown are flushed too.
+	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	runCtx, stopRun := context.WithCancel(context.Background())
+	defer stopRun()
 	bgDone := make(chan struct{})
-	go func() { svc.Run(ctx); close(bgDone) }()
+	go func() { svc.Run(runCtx); close(bgDone) }()
 
+	servers := []*http.Server{srv}
 	errc := make(chan error, 2)
 	go func() { errc <- srv.Serve(ln) }()
 	switch {
@@ -352,6 +359,9 @@ func serve(args []string) error {
 		go func() { errc <- pubSrv.ServeTLS(pubLn, "", "") }()
 	case pubSrv != nil:
 		go func() { errc <- pubSrv.Serve(pubLn) }()
+	}
+	if pubSrv != nil {
+		servers = append(servers, pubSrv)
 	}
 	var names []string
 	for _, p := range providers {
@@ -361,26 +371,39 @@ func serve(args []string) error {
 		"allow", *allow, "whois", !*noWhois, "db", *dbPath, "snapshots", *snapDir,
 		"public", *publicURL, "public_listen", *publicListen, "sign_in", names)
 
+	var serveErr error
 	select {
-	case err := <-errc:
-		stop()
-		<-bgDone
-		return err
-	case <-ctx.Done():
+	case serveErr = <-errc:
+		log.Error("server stopped", "err", serveErr)
+	case <-sigCtx.Done():
 	}
+	// From here a second Ctrl-C (or SIGTERM) ends the process at once.
+	stop()
 	log.Info("shutting down")
-	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	stopServing(log, shutdownTimeout, servers, stopRun, bgDone)
+	return serveErr
+}
+
+const shutdownTimeout = 5 * time.Second
+
+// stopServing shuts the servers down together, letting requests in flight
+// finish for up to timeout, and only then stops background work (stopRun)
+// and waits for it (done), which flushes the click counts those last
+// requests added.
+func stopServing(log *slog.Logger, timeout time.Duration, servers []*http.Server, stopRun func(), done <-chan struct{}) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if err := srv.Shutdown(sctx); err != nil {
-		log.Warn("shutdown", "err", err)
+	var wg sync.WaitGroup
+	for _, s := range servers {
+		wg.Go(func() {
+			if err := s.Shutdown(ctx); err != nil {
+				log.Warn("shutdown", "err", err)
+			}
+		})
 	}
-	if pubSrv != nil {
-		if err := pubSrv.Shutdown(sctx); err != nil {
-			log.Warn("shutdown public", "err", err)
-		}
-	}
-	<-bgDone // flushes click counts
-	return nil
+	wg.Wait()
+	stopRun()
+	<-done
 }
 
 // publicAddr is where and how the public address is served.
