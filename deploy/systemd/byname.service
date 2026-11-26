@@ -66,7 +66,7 @@ SystemCallErrorNumber=EPERM
 # Network: only tailnet peers and localhost (health checks) may talk to the
 # service, plus the LAN subnet if the 10-lan-access.conf drop-in exists. It
 # makes no outbound connections, except with the public address on: the
-# 20-public.conf drop-in (bootstrap.sh --public) allows any address so
+# 20-public.conf drop-in (bootstrap.sh --public-domain or --funnel) allows any address so
 # sign-in can reach Google and Slack, and adds /run/byname for the socket that
 # Tailscale Funnel proxies to. AF_UNIX is for tailscaled.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

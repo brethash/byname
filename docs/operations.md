@@ -331,7 +331,7 @@ bin/byname export --db /tmp/drill.db | head -40     # links are there
 
 | Task | Command |
 |---|---|
-| Logs | `ssh <you>@me journalctl -u byname -f` (debug detail: `BYNAME_LOG_LEVEL=debug` in `/etc/byname/byname.env`) |
+| Logs | `ssh <you>@me journalctl -u byname -f` (debug detail: `BYNAME_LOG_LEVEL=debug` in `/etc/byname/byname.local.env`, then `sudo systemctl restart byname`) |
 | Health | `curl http://me/_/healthz` (version, link count, free disk; under-voltage flags on a Pi) |
 | Who changed what | `http://me/_/activity`, or a link's page (`me/name+`) |
 | Undo a bad edit | link page → History → "Restore this version" |
@@ -339,7 +339,7 @@ bin/byname export --db /tmp/drill.db | head -40     # links are there
 | Bulk import | `sudo -u byname /usr/local/lib/byname/current/byname import --hosts me --dry-run file.json` |
 | Change settings | edit `/etc/byname/byname.local.env` (yours; `byname.env` is managed), then `sudo systemctl restart byname` |
 | Turn LAN access on/off | re-run `bootstrap.sh` with or without `--lan-access` |
-| Turn the public address on/off | re-run `bootstrap.sh` with or without `--public` ([public-access.md](public-access.md)) |
+| Turn the public address on/off | re-run `bootstrap.sh` with or without `--public-domain` or `--funnel` ([public-access.md](public-access.md)) |
 | Who is signed in (public address) | `sudo -u byname /usr/local/lib/byname/current/byname sessions`; `… sessions revoke <email>` signs someone out |
 | Rotate the AWS key | create a new key, replace `/etc/credstore/byname-backup-aws`, delete the old key |
 | Re-check baseline | `sudo byname-verify` |
@@ -359,6 +359,8 @@ The host reboots at 04:00 when an update needs it.
 | `/_/whoami` shows no Tailscale user | WhoIs failed; `journalctl -u byname \| grep whois`; check `/var/run/tailscale/tailscaled.sock` exists |
 | Locked out of SSH | Tailscale SSH (`ssh <you>@me`) bypasses the LAN rule. Otherwise, on a Pi use a keyboard and HDMI, then `sudo systemctl stop byname-firewall`. A cloud server has no console login: build a new one ([cloud.md](cloud.md)) and restore the newest S3 backup (see Restore) |
 | Deploy rolled back | Read the journal lines it printed; `ssh <you>@me journalctl -u byname -n 50` |
+| Deploy rolled back, and the rollback failed too | The release changed the database schema, which the previous version refuses: run the `sudo byname-restore …` command the deploy printed (see Deploying changes) |
+| `byname-restore` says it can't read a file as byname | It reads byname's own files, and any path through a symlink, with byname's rights. Copy the file to a plain path (your home) and restore from there |
 
 ## Security model in one paragraph
 

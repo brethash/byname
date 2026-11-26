@@ -337,6 +337,14 @@ if run_bootstrap ts-on ok "${T[@]}" --platform cloud; then
 fi
 reset_host
 
+# ---------------------------------------------------------------- platform detection
+section "bootstrap.sh: platform detection"
+if run_bootstrap detect-platform ok "${T[@]}"; then
+  check "not a Raspberry Pi: cloud" grep -qx 'PLATFORM=cloud' /etc/byname/host.conf
+  check "no 'No such file' noise" bash -c "! grep -q 'No such file' '$LOG'"
+fi
+reset_host
+
 # ---------------------------------------------------------------- lockout guard
 section "bootstrap.sh: OpenSSH lockout guard"
 printf '0      0      192.168.1.50:22      198.51.100.9:51234\n' > "$STUB_STATE/ss-established"

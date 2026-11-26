@@ -110,7 +110,9 @@ step "Preflight"
 [[ $EUID -eq 0 ]] || die "run as root (sudo)"
 [[ -n "$ADMIN_USER" ]] || { usage; exit 2; }
 if [[ -z "$PLATFORM" ]]; then
-  if tr -d '\0' < /proc/device-tree/model 2>/dev/null | grep -q 'Raspberry Pi'; then PLATFORM=pi; else PLATFORM=cloud; fi
+  model=""
+  [[ -r /proc/device-tree/model ]] && model="$(tr -d '\0' < /proc/device-tree/model)"
+  if [[ "$model" == *"Raspberry Pi"* ]]; then PLATFORM=pi; else PLATFORM=cloud; fi
 fi
 case "$PLATFORM" in
   pi)
@@ -135,6 +137,12 @@ OS_CODENAME="$(os_release VERSION_CODENAME || true)"
 OS_PRETTY="$(os_release PRETTY_NAME || true)"
 [[ "$OS_ID" == "debian" ]] || die "expected Debian or Raspberry Pi OS, got ${OS_PRETTY:-unknown}"
 [[ -n "$OS_CODENAME" ]] || die "cannot read VERSION_CODENAME from /etc/os-release"
+if ! command -v python3 >/dev/null 2>&1; then
+  # The checks below use it; Raspberry Pi OS and Debian's cloud images have it.
+  apt-get -o DPkg::Lock::Timeout=300 update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq python3 >/dev/null
+  ok "installed python3 (preflight needs it)"
+fi
 id "$ADMIN_USER" >/dev/null 2>&1 || die "user $ADMIN_USER does not exist"
 ADMIN_HOME="$(getent passwd "$ADMIN_USER" | cut -d: -f6)"
 [[ -s "$ADMIN_HOME/.ssh/authorized_keys" ]] ||
