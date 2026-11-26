@@ -15,7 +15,13 @@
 #
 # Sign-in sessions are cleared in the restored copy, so everyone signs in
 # again: a snapshot would otherwise bring back sessions revoked since.
+#
+# /var/lib/byname belongs to byname, and its snapshots are byname's data: this
+# script reads and writes there as byname (or by rename, with byname stopped),
+# and opens snapshots in sqlite3's safe mode, so a compromised byname can't
+# use a restore to act as root.
 set -euo pipefail
+umask 027
 
 DB=/var/lib/byname/byname.db
 SNAPS=/var/lib/byname/snapshots
@@ -25,6 +31,19 @@ usage() { echo "usage: sudo byname-restore <snapshot.db | snapshot.db.gz> | --la
 
 [[ $EUID -eq 0 ]] || die "run as root: sudo byname-restore $*"
 [[ $# -eq 1 ]] || usage
+
+# A snapshot is data, not code: no view or trigger in it may call writefile()
+# and the like with root's rights.
+sql() { sqlite3 -safe -cmd 'PRAGMA trusted_schema = OFF;' "$CANDIDATE" "$@"; }
+as_byname() { runuser -u byname -- "$@"; }
+# Read FILE, as byname if it is under /var/lib/byname (a symlink planted there
+# then can't make root read something else).
+read_file() {
+  case "$(realpath -s -m -- "$1")" in
+    /var/lib/byname/*) as_byname cat -- "$1" ;;
+    *) cat -- "$1" ;;
+  esac
+}
 
 # byname's own snapshots, oldest first (their names sort by time).
 snapshots() {
@@ -64,27 +83,28 @@ trap cleanup EXIT
 
 CANDIDATE="$WORK/restore.db"
 if [[ "$SRC" == *.gz ]]; then
-  gzip -dc "$SRC" > "$CANDIDATE"
+  read_file "$SRC" | gzip -dc > "$CANDIDATE"
 else
-  cp "$SRC" "$CANDIDATE"
+  read_file "$SRC" > "$CANDIDATE"
   # A pre-restore copy keeps its most recent changes in its -wal file.
-  if [[ -f "$SRC-wal" ]]; then cp "$SRC-wal" "$CANDIDATE-wal"; fi
+  if [[ -f "$SRC-wal" ]]; then read_file "$SRC-wal" > "$CANDIDATE-wal"; fi
 fi
 
 echo "==> checking the snapshot"
-result="$(sqlite3 "$CANDIDATE" 'PRAGMA integrity_check;' 2>&1)" || true
+result="$(sql 'PRAGMA integrity_check;' 2>&1)" || true
 [[ "$result" == "ok" ]] || die "$SRC failed its integrity check: $result"
-links="$(sqlite3 "$CANDIDATE" 'SELECT count(*) FROM links WHERE deleted_at IS NULL;' 2>&1)" ||
-  die "$SRC is not a byname database: $links"
-schema="$(sqlite3 "$CANDIDATE" 'PRAGMA user_version;')"
+links="$(sql 'SELECT count(*) FROM links WHERE deleted_at IS NULL;' 2>&1)" ||
+  die "$SRC is not a usable byname database: $links"
+schema="$(sql 'PRAGMA user_version;')"
 echo "    ok: $links live links, schema version $schema"
-has_sessions="$(sqlite3 "$CANDIDATE" "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'sessions';")"
+has_sessions="$(sql "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'sessions';")"
 if [[ $has_sessions -gt 0 ]]; then
-  cleared="$(sqlite3 "$CANDIDATE" 'SELECT count(*) FROM sessions; DELETE FROM sessions;')"
+  cleared="$(sql 'SELECT count(*) FROM sessions; DELETE FROM sessions;' 2>&1)" ||
+    die "could not clear the sign-in sessions in $SRC: $cleared"
   echo "    cleared $cleared sign-in session(s) in the restored copy: everyone signs in again"
 fi
 # One self-contained file: fold any -wal into it.
-sqlite3 "$CANDIDATE" 'PRAGMA journal_mode = DELETE;' >/dev/null
+sql 'PRAGMA journal_mode = DELETE;' >/dev/null
 
 echo "==> stopping byname"
 STOPPED=1
@@ -94,15 +114,20 @@ KEPT=""
 if [[ -e "$DB" ]]; then
   KEPT="$SNAPS/pre-restore-$(date -u +%Y%m%dT%H%M%S.%3NZ).db"
   echo "==> keeping the current database as $KEPT"
-  install -d -m 0750 -o byname -g byname "$SNAPS"
+  as_byname mkdir -p "$SNAPS"
   for f in "" -wal -shm; do
-    if [[ -e "$DB$f" ]]; then cp --preserve=mode,ownership,timestamps "$DB$f" "$KEPT$f"; fi
+    if [[ -e "$DB$f" ]]; then as_byname cp --preserve=timestamps "$DB$f" "$KEPT$f"; fi
   done
 fi
 
 echo "==> installing the snapshot"
+# Next to the database, then renamed over it: with byname stopped nothing can
+# swap these paths, and a rename replaces a planted symlink rather than
+# following it.
+rm -f "$DB.restoring"
+install -o byname -g byname -m 0640 "$CANDIDATE" "$DB.restoring"
 rm -f "$DB-wal" "$DB-shm"
-install -o byname -g byname -m 0640 "$CANDIDATE" "$DB"
+mv -fT "$DB.restoring" "$DB"
 
 echo "==> starting byname"
 systemctl start byname.service

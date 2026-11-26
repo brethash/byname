@@ -402,6 +402,35 @@ if restore "$WORK/schema1.db"; then ok "restore a schema-1 snapshot"; else bad "
 check "restored links: old" test "$(links_in "$DB")" == old
 is_live v2
 
+check "pre-restore copies belong to byname" test "$(stat -c %U "$KEPT")" == byname
+
+# A compromised byname must not get root through a restore. A snapshot is
+# data: a trigger in it that calls writefile() must not run as root.
+SNAP="$(find "$SNAPS" -name 'byname-*.db' | sort | tail -1)"
+cp "$SNAP" "$WORK/evil.db"
+sqlite3 "$WORK/evil.db" "INSERT INTO sessions (token_hash, provider, subject, email, created_at, expires_at) VALUES (x'03', 'google', 's3', 'c@family.example', 0, 1);
+  CREATE TRIGGER evil BEFORE DELETE ON sessions BEGIN SELECT writefile('/root/pwned', 'owned'); END;"
+cp "$DB" "$WORK/live.before"
+LOG="$OUT/restore-evil-trigger.log"
+if restore "$WORK/evil.db"; then bad "restored a snapshot whose trigger calls writefile()"; else ok "refused a snapshot whose trigger calls writefile()"; fi
+check "the trigger wrote nothing" test ! -e /root/pwned
+check "live database untouched" cmp -s "$DB" "$WORK/live.before"
+# A symlink byname planted in its snapshot directory is read as byname, so it
+# can't hand root's files to the restore.
+sqlite3 /root/secret.db < "$SRC/internal/store/migrations/0001_init.sql"
+add_link rootonly /root/secret.db
+chmod 0600 /root/secret.db
+ln -sf /root/secret.db "$SNAPS/byname-29990101T000000.000Z.db"
+LOG="$OUT/restore-symlink.log"
+if restore "$SNAPS/byname-29990101T000000.000Z.db"; then bad "restored through a symlink to a root-only file"; else ok "a planted symlink can't read root's files"; fi
+check "live database untouched" cmp -s "$DB" "$WORK/live.before"
+LOG="$OUT/restore-latest-symlink.log"
+restore --latest || true
+check "--latest skips the symlink" bash -c "! grep -q 29990101 '$LOG'"
+check "rootonly never restored" test "$(sqlite3 "$DB" "SELECT count(*) FROM links WHERE name = 'rootonly';")" == 0
+rm -f "$SNAPS/byname-29990101T000000.000Z.db"
+is_live v2
+
 LOG="$OUT/restore-list.log"
 if restore --list; then ok "restore --list"; else bad "restore --list failed"; fi
 expect "$LOG" "+$SNAPS/byname-" "+$SNAPS/pre-restore-"
