@@ -254,7 +254,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get -o DPkg::Lock::Timeout=300 update -qq
 purge=()
 for pkg in avahi-daemon bluez triggerhappy rpi-connect rpi-connect-lite modemmanager cups cups-daemon; do
-  if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
+  if [[ "$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true)" == "install ok installed" ]]; then
     purge+=("$pkg")
   fi
 done
@@ -365,7 +365,9 @@ mkdir -p /etc/systemd/journald.conf.d
 rm -f /etc/systemd/journald.conf.d/10-byname-volatile.conf # older name
 if [[ "$PLATFORM" == pi ]]; then
   step "SD card wear"
-  if findmnt -no OPTIONS / | grep -qw noatime; then
+  # Captured, not piped into grep -q: under pipefail an early-exiting grep
+  # can fail the pipeline (SIGPIPE) even when it matched.
+  if grep -qw noatime <<<"$(findmnt -no OPTIONS /)"; then
     ok "root mounted noatime"
   else
     warn "root is not mounted noatime; add noatime to / in /etc/fstab"
@@ -375,7 +377,7 @@ if [[ "$PLATFORM" == pi ]]; then
     systemctl disable --now dphys-swapfile >/dev/null 2>&1 || true
     ok "disabled dphys-swapfile (file swap on SD)"
   fi
-  if swapon --show=TYPE --noheadings 2>/dev/null | grep -qx file; then
+  if grep -qx file <<<"$(swapon --show=TYPE --noheadings 2>/dev/null)"; then
     warn "a file-backed swap is still active: $(swapon --show=NAME --noheadings | tr '\n' ' ')"
   else
     ok "no file-backed swap (zram is fine)"
@@ -681,7 +683,8 @@ if [[ $FUNNEL -eq 1 ]]; then
     die "tailscale funnel failed: turn on HTTPS certificates (admin console → DNS) and give $TAG the funnel attribute in your tailnet policy (deploy/tailscale/policy.hujson), then re-run"
   fi
   ok "$PUBLIC_URL is on the internet (Funnel → $PUBLIC_SOCK); outside the tailnet it asks for sign-in"
-elif command -v tailscale >/dev/null 2>&1 && tailscale funnel status 2>/dev/null | grep -qF "$PUBLIC_SOCK"; then
+elif command -v tailscale >/dev/null 2>&1 &&
+  grep -qF "$PUBLIC_SOCK" <<<"$(tailscale funnel status 2>/dev/null || true)"; then
   step "Public address"
   tailscale funnel --https=443 off >/dev/null 2>&1 || true
   tailscale serve --https=443 off >/dev/null 2>&1 || true

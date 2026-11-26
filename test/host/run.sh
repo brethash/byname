@@ -321,6 +321,8 @@ if run_bootstrap ts-on ok "${T[@]}" --platform cloud; then
     check "tailscaled not running" test ! -e "$STUB_STATE/units/tailscaled.service.active"
     check "byname.service doesn't want tailscaled" \
       bash -c "! PATH='$(stub_path)' systemctl show byname.service -p Wants --value | grep -qw tailscaled.service"
+    run_verify ts-off
+    expect "$LOG" '+PASS tailscaled masked' "+PASS byname.service doesn't pull in tailscaled" '+PASS WhoIs off' '+PASS tailnet ranges not trusted'
   fi
   if run_bootstrap ts-on-again ok "${T[@]}" --platform cloud; then
     after_run
@@ -328,6 +330,9 @@ if run_bootstrap ts-on ok "${T[@]}" --platform cloud; then
     check "tailscaled running again" test -e "$STUB_STATE/units/tailscaled.service.active"
     check "byname.service wants tailscaled" \
       bash -c "PATH='$(stub_path)' systemctl show byname.service -p Wants --value | grep -qw tailscaled.service"
+    run_verify ts-on-again
+    expect "$LOG" '+PASS byname.service starts after tailscaled' '+PASS tailnet addresses dropped unless they arrive on tailscale0' \
+      '+PASS tailnet hostname me' '+PASS BYNAME_HOSTS includes the tailnet FQDN'
   fi
 fi
 reset_host
@@ -574,6 +579,33 @@ is_live v7 links
 cp "$WORK/local.env.before" /etc/byname/byname.local.env
 PATH="$(stub_path)" systemctl restart byname.service
 is_live v7
+
+# ---------------------------------------------------------------- byname-verify
+section "byname-verify"
+run_verify host
+expect "$LOG" '+PASS unattended-upgrades enabled' '+PASS sshd trustedusercakeys none' '+PASS input policy drop' \
+  '+PASS tailnet addresses dropped unless they arrive on tailscale0' '+PASS byname.service starts after tailscaled' \
+  '+PASS byname.service active (v7)'
+if [[ $HAVE_IFACES -eq 1 ]]; then
+  expect "$LOG" '+PASS health OK over 100.101.102.103' '+PASS foreign Host header refused (421)'
+fi
+# Backups are judged by what was uploaded, not by the last run's Result
+# (systemd says "success" before the first run).
+CASE=verify-backups
+touch "$STUB_STATE/units/byname-backup.timer.enabled"
+NEWEST="$(find "$SNAPS" -maxdepth 1 -type f -name 'byname-*.db' -printf '%f\n' | sort | tail -n 1)"
+touch -d '3 hours ago' "$SNAPS/$NEWEST"
+rm -f /var/lib/byname-backup/last-upload
+run_verify backup-never
+expect "$LOG" "+FAIL newest snapshot $NEWEST is" '+last upload: never' '-PASS last backup run'
+install -d -m 0700 /var/lib/byname-backup
+echo "$NEWEST" > /var/lib/byname-backup/last-upload
+run_verify backup-uploaded
+expect "$LOG" "+PASS newest snapshot uploaded ($NEWEST)"
+echo byname-20000101T000000.000Z.db > /var/lib/byname-backup/last-upload
+touch "$SNAPS/$NEWEST"
+run_verify backup-pending
+expect "$LOG" "+PASS newest snapshot $NEWEST is 0 min old"
 
 # ---------------------------------------------------------------- summary
 printf '\n\033[1m== %d checks passed, %d failed\033[0m\n' "$PASSES" "${#FAILED[@]}"

@@ -194,6 +194,8 @@ case $cmd in
     done ;;
   show)
     v="$(values "${units[0]}" "$prop" | paste -sd' ' -)"
+    # systemd's default: a service that never ran reports Result=success.
+    if [[ -z $v && $prop == Result ]]; then v=success; fi
     if [[ $value -eq 1 ]]; then echo "$v"; else echo "$prop=$v"; fi ;;
   *) echo "systemctl stub: unsupported: $*" >&2; rc=1 ;;
 esac

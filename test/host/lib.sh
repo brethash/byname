@@ -133,5 +133,20 @@ check_firewall() {
   expect "$f" "$@"
 }
 
+# run_verify CASE: byname-verify with the stubs; output without colours in $LOG.
+# Many checks fail in a container; the test looks at specific lines.
+run_verify() {
+  CASE=$1
+  LOG="$OUT/verify-$1.log"
+  PATH="$(stub_path)" byname-verify 2>&1 | sed 's/\x1b\[[0-9;]*m//g' > "$LOG"
+  if grep -qE 'All checks passed|check\(s\) failed' "$LOG"; then
+    ok "byname-verify ran to the end"
+  else
+    bad "byname-verify stopped early; last lines:"
+    tail -n 5 "$LOG" | sed 's/^/         /'
+  fi
+  check "byname-verify: no unbound variables or missing commands" bash -c "! grep -qE 'unbound variable|command not found' '$LOG'"
+}
+
 # The systemctl stub's log has a line matching the extended regex.
 called() { grep -qE -- "$1" "$STUB_STATE/systemctl.log"; }
