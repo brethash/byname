@@ -139,6 +139,12 @@ func TestRedirects(t *testing.T) {
 		"/wiki?x=1":        "https://wiki.example.com/start?x=1",
 		"/gh/octocat":      "https://github.com/octocat",
 		"/gh/octocat/more": "https://github.com/octocat",
+		// The extra path is decoded once, never twice.
+		"/wiki/100%25":        "https://wiki.example.com/start/100%25",
+		"/wiki/50%25off/page": "https://wiki.example.com/start/50%25off/page",
+		"/wiki/a%2520b":       "https://wiki.example.com/start/a%2520b",
+		"/wiki/a%2Fb":         "https://wiki.example.com/start/a%2Fb",
+		"/gh/100%25":          "https://github.com/100%25",
 	}
 	for path, want := range cases {
 		w := h.do("GET", path, "")

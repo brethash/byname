@@ -134,6 +134,20 @@ func TestExpand(t *testing.T) {
 		{"https://www.google.com/search?q={*}", "cats/and dogs", "", "https://www.google.com/search?q=cats%2Fand+dogs"},
 		{"https://www.google.com/search?q={1}", "a&b=c", "", "https://www.google.com/search?q=a%26b%3Dc"},
 		{"https://x.com/{1}#{2}", "p/q", "", "https://x.com/p#q"},
+		// Appended segments are decoded exactly once: "%25" is a literal "%",
+		// "%2520" a literal "%20", "%2F" a "/" inside one segment.
+		{"https://example.com/wiki", "100%25", "", "https://example.com/wiki/100%25"},
+		{"https://example.com/wiki", "50%25off/page", "", "https://example.com/wiki/50%25off/page"},
+		{"https://example.com/wiki", "a%2520b", "", "https://example.com/wiki/a%2520b"},
+		{"https://example.com/wiki", "a%2Fb/c", "", "https://example.com/wiki/a%2Fb/c"},
+		{"https://example.com/wiki", "a%20b/c%20d", "", "https://example.com/wiki/a%20b/c%20d"},
+		{"https://example.com/wiki", "%25%2520%2F%20", "x=1", "https://example.com/wiki/%25%2520%2F%20?x=1"},
+		{"https://example.com/a%20b", "c%25", "", "https://example.com/a%20b/c%25"},
+		{"https://en.wikipedia.org/wiki", "Foo_(bar)", "", "https://en.wikipedia.org/wiki/Foo_(bar)"},
+		{"https://x.com/{1}", "100%25", "", "https://x.com/100%25"},
+		{"https://x.com/{*}", "a%2520b/50%25", "", "https://x.com/a%2520b/50%25"},
+		{"https://x.com/{1}", "a%20b", "", "https://x.com/a%20b"},
+		{"https://www.google.com/search?q={*}", "100%25/a%2520b", "", "https://www.google.com/search?q=100%25%2Fa%2520b"},
 	}
 	for _, c := range cases {
 		got, err := Expand(c.target, c.rest, c.query, self)
@@ -191,9 +205,11 @@ func FuzzValidateTarget(f *testing.F) {
 }
 
 // FuzzExpand: for a fixed, valid template, no rest/query input may move the
-// destination to a different scheme or host.
+// destination to a different scheme or host, and the appended path segments
+// must arrive intact: decoded once, in order, none dropped.
 func FuzzExpand(f *testing.F) {
-	for _, s := range []string{"a/b", "%2F%2Fevil.com", "..%2F..", "@evil.com", "a%00b", "{1}", "x/../../y"} {
+	for _, s := range []string{"a/b", "%2F%2Fevil.com", "..%2F..", "@evil.com", "a%00b", "{1}", "x/../../y",
+		"100%25", "50%25off/page", "a%2520b", "a%2Fb", "a%20b", "Foo_(bar)", "a;b,c"} {
 		f.Add(s, "q=1")
 	}
 	targets := []string{
@@ -215,6 +231,47 @@ func FuzzExpand(f *testing.F) {
 			if u.Scheme != "https" || u.Host != "example.com" || u.User != nil {
 				t.Fatalf("Expand(%q,%q,%q) = %q escaped its host", target, rest, query, out)
 			}
+			_, segs, err := splitRest(rest)
+			if err != nil {
+				t.Fatalf("Expand(%q,%q,%q) succeeded but splitRest failed: %v", target, rest, query, err)
+			}
+			if dotSegment(rest) {
+				continue // "." and ".." are resolved, so segments may be consumed
+			}
+			var want string
+			switch target {
+			case "https://example.com/base":
+				want = "/base"
+				if len(segs) > 0 {
+					want += "/" + strings.Join(segs, "/")
+				}
+			case "https://example.com/{*}":
+				want = "/" + strings.Join(segs, "/")
+			case "https://example.com/{1}/{2}":
+				want = "/" + seg(segs, 0) + "/" + seg(segs, 1)
+			default:
+				continue
+			}
+			if u.Path != want {
+				t.Fatalf("Expand(%q,%q,%q) = %q: path %q, want %q", target, rest, query, out, u.Path, want)
+			}
 		}
 	})
+}
+
+// dotSegment reports whether rest has a "." or ".." segment.
+func dotSegment(rest string) bool {
+	for _, s := range strings.Split(rest, "/") {
+		if s == "." || s == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func seg(segs []string, i int) string {
+	if i < len(segs) {
+		return segs[i]
+	}
+	return ""
 }

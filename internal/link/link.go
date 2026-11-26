@@ -215,7 +215,7 @@ func stripPort(hostport string) string {
 // path-escaped. A target without placeholders gets rest appended to its path.
 // The result is re-validated, so a bad expansion is an error, never a redirect.
 func Expand(target, rest, rawQuery string, selfHosts []string) (string, error) {
-	segs, err := splitRest(rest)
+	raw, segs, err := splitRest(rest)
 	if err != nil {
 		return "", err
 	}
@@ -223,7 +223,7 @@ func Expand(target, rest, rawQuery string, selfHosts []string) (string, error) {
 	if HasPlaceholders(target) {
 		dest = expandTemplate(target, segs)
 	} else {
-		dest, err = appendPath(target, segs)
+		dest, err = appendPath(target, raw)
 		if err != nil {
 			return "", err
 		}
@@ -235,24 +235,26 @@ func Expand(target, rest, rawQuery string, selfHosts []string) (string, error) {
 	return dest, nil
 }
 
-// splitRest splits the escaped rest-of-path into unescaped segments, dropping
-// empty ones (me/name//x == me/name/x).
-func splitRest(rest string) ([]string, error) {
+// splitRest splits the escaped rest-of-path into segments, dropping empty
+// ones (me/name//x == me/name/x). It returns each segment twice: as it was
+// escaped in the request (raw), and unescaped (segs). Every segment must
+// unescape cleanly.
+func splitRest(rest string) (raw, segs []string, err error) {
 	if rest == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
-	var out []string
 	for _, s := range strings.Split(rest, "/") {
 		if s == "" {
 			continue
 		}
 		u, err := url.PathUnescape(s)
 		if err != nil {
-			return nil, fmt.Errorf("bad path segment %q: %w", s, err)
+			return nil, nil, fmt.Errorf("bad path segment %q: %w", s, err)
 		}
-		out = append(out, u)
+		raw = append(raw, s)
+		segs = append(segs, u)
 	}
-	return out, nil
+	return raw, segs, nil
 }
 
 func expandTemplate(target string, segs []string) string {
@@ -296,15 +298,23 @@ func substitute(which string, segs []string, inQuery bool) string {
 	return esc(segs[n-1])
 }
 
-func appendPath(target string, segs []string) (string, error) {
-	if len(segs) == 0 {
+// appendPath appends the request's still-escaped path segments to target's
+// path. They are passed to JoinPath as they arrived, never unescaped first:
+// JoinPath expects escaped elements, so an unescaped "%" (from "%25") would be
+// decoded a second time, or make JoinPath fail and silently keep the bare
+// target. Keeping the request's own escaping also keeps "%2F" a character
+// rather than a separator, and leaves characters such as "(" or ";" as the
+// browser sent them. "." and ".." segments are still resolved (they can only
+// move within the destination's host).
+func appendPath(target string, raw []string) (string, error) {
+	if len(raw) == 0 {
 		return target, nil
 	}
 	u, err := url.Parse(target)
 	if err != nil {
 		return "", ErrTargetHost
 	}
-	return u.JoinPath(segs...).String(), nil
+	return u.JoinPath(raw...).String(), nil
 }
 
 func appendQuery(dest, rawQuery string) string {
