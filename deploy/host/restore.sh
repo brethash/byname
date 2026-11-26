@@ -45,7 +45,7 @@ as_byname() { runuser -u byname -- "$@"; }
 read_file() {
   local plain opened
   plain="$(realpath -s -m -- "$1")" # as written, symlinks not followed
-  if [[ $plain != /var/lib/byname/* && "$(realpath -e -- "$1")" == "$plain" && -f $plain ]]; then
+  if [[ $plain != /var/lib/byname/* && "$(realpath -e -- "$1" 2>/dev/null)" == "$plain" && -f $plain ]]; then
     # shellcheck disable=SC2094 # $plain is only compared as a string here
     {
       opened="$(readlink /proc/self/fd/3)"
@@ -135,6 +135,9 @@ if [[ -e "$DB" ]]; then
 fi
 
 echo "==> installing the snapshot"
+# A host where byname never started has no state directory yet (its parent,
+# /var/lib, is root's: nothing can be planted there).
+[[ -d ${DB%/*} ]] || install -d -o byname -g byname -m 0750 "${DB%/*}"
 # Next to the database, then renamed over it: with byname stopped nothing can
 # swap these paths, and a rename replaces a planted symlink rather than
 # following it.

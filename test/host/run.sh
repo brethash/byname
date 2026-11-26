@@ -16,7 +16,8 @@ fi
 . "$(dirname "$0")/lib.sh"
 
 # ---------------------------------------------------------------- setup
-mkdir -p "$WORK" "$OUT" /boot/firmware
+# Directories every Debian host has, but a bare container may not.
+mkdir -p "$WORK" "$OUT" /boot/firmware /etc/systemd/system /etc/ssh/sshd_config.d
 if ! nft list ruleset >/dev/null 2>&1; then
   echo "nft can't reach the kernel: run the container with --cap-add NET_ADMIN" >&2
   exit 2
