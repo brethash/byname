@@ -345,6 +345,9 @@ func TestFormCreateEditDeleteRestoreRevert(t *testing.T) {
 		t.Fatalf("created_by = %q (WhoIs attribution)", l.CreatedBy)
 	}
 	id := strconv.FormatInt(l.ID, 10)
+	if body := h.do("GET", "/_/links/"+id, "").Body.String(); !strings.Contains(body, "on alice-laptop") {
+		t.Errorf("history doesn't name the device: %.1500s", body)
+	}
 
 	// Edit form renders with rev.
 	w = h.do("GET", "/_/links/"+id+"/edit", "")

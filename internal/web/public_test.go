@@ -362,6 +362,10 @@ func TestPublicSignInFlow(t *testing.T) {
 	if len(events) != 1 || events[0].Actor.IP != "198.51.100.4" || events[0].Actor.Login != "alice@gmail.com" {
 		t.Fatalf("audit actor = %+v", events)
 	}
+	detail := h.pub("GET", "/_/links/"+strconv.FormatInt(l.ID, 10), "", funnel("203.0.113.9"), withCookie(sess)).Body.String()
+	if !strings.Contains(detail, "via Google") || strings.Contains(detail, "on via") {
+		t.Errorf("history attribution for a signed-in person: %.1500s", detail)
+	}
 
 	// Cross-site forms are still refused with a session.
 	w = h.pub("POST", "/_/links", form("name", "evil", "target", "https://evil.example/"),

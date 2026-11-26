@@ -455,11 +455,22 @@ func (s *Server) funcs(host string, internet bool) template.FuncMap {
 		"ago":        ago,
 		"when":       func(t time.Time) string { return t.Local().Format("2006-01-02 15:04") },
 		"trunc":      trunc,
+		"device":     deviceLabel,
 		"isTemplate": link.HasPlaceholders,
 		"sameFields": func(a *store.Fields, l *store.Link) bool {
 			return a != nil && l != nil && !l.Deleted() && *a == l.Fields()
 		},
 	}
+}
+
+// deviceLabel is what follows a person's name in the history: "on
+// alice-laptop" for a Tailscale device, and the sign-in label as it is
+// ("via Google") for someone who signed in on the public address.
+func deviceLabel(node string) string {
+	if strings.HasPrefix(node, "via ") {
+		return node
+	}
+	return "on " + node
 }
 
 func ago(t time.Time) string {

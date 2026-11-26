@@ -31,7 +31,7 @@
 </ul>{{else}}<p class="muted">None yet.</p>{{end}}
 {{end}}
 
-{{define "actor"}}{{if .Login}}<span title="{{.IP}}">{{.Login}}</span>{{with .Node}} <span class="muted small">on {{.}}</span>{{end}}{{else}}<span class="muted">{{.IP}}</span>{{end}}{{end}}
+{{define "actor"}}{{if .Login}}<span title="{{.IP}}">{{.Login}}</span>{{with .Node}} <span class="muted small">{{device .}}</span>{{end}}{{else}}<span class="muted">{{.IP}}</span>{{end}}{{end}}
 
 {{define "change"}}{{if and .Before .After}}
   {{if ne .Before.Target .After.Target}}<div class="diff"><del>{{trunc .Before.Target 70}}</del> → <ins>{{trunc .After.Target 70}}</ins></div>{{end}}
