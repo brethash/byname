@@ -21,12 +21,13 @@ that name wherever these docs say `me` in a hostname or URL, and
 | `/etc/byname/byname.env` | `byname serve` settings (`BYNAME_HOSTS`, …), rewritten by `bootstrap.sh` |
 | `/etc/byname/byname.local.env` | your own `BYNAME_*` overrides (kept across bootstrap runs) |
 | `/etc/byname/host.conf` | platform (`pi`/`cloud`), name and tag, for `byname-verify` |
+| `/etc/systemd/system/byname.service.d/05-tailscale.conf` | present only with Tailscale: starts byname after `tailscaled` (without Tailscale, `tailscaled` is masked) |
 | `/etc/systemd/system/byname.service.d/10-lan-access.conf` | present only with `--lan-access` |
 | `/etc/byname/firewall.nft` | nftables table `inet byname_filter` |
 | `/etc/byname/byname-backup.env` | backup bucket/region (optional) |
 | `/etc/credstore/byname-backup-aws` | backup AWS key (root 0600, optional) |
 | `/var/lib/byname/byname.db` | the database (SQLite, WAL) |
-| `/var/lib/byname/snapshots/` | `byname-<UTC time>.db` snapshots (last 14) |
+| `/var/lib/byname/snapshots/` | `byname-<UTC time>.db` snapshots (last 14), and the `pre-restore-<UTC time>.db` copies `byname-restore` keeps (never pruned) |
 | `/usr/local/sbin/byname-verify`, `byname-restore` | checks and restore helper |
 | units | `byname.service`, `byname-firewall.service`, `byname-backup.service` + `.timer` |
 
