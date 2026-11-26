@@ -4,14 +4,17 @@
 #
 # 1. verify the binary's checksum
 # 2. snapshot the database with the CURRENT binary (before any migration)
-# 3. atomically point /usr/local/lib/byname/current at the new version
-# 4. restart and health-check; on failure point back and restart
+# 3. install the units, and atomically point /usr/local/lib/byname/current at
+#    the new version
+# 4. restart and health-check; on failure put the previous units and version
+#    back and restart
 set -euo pipefail
 
 STAGE="$1" VERSION="$2" SHA="$3"
 LIB=/usr/local/lib/byname
 DB=/var/lib/byname/byname.db
 SNAPS=/var/lib/byname/snapshots
+UNITS=(byname.service byname-backup.service byname-backup.timer byname-firewall.service)
 
 [[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 1; }
 [[ "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad version" >&2; exit 1; }
@@ -26,17 +29,10 @@ install -d -m 0755 "$LIB/$VERSION"
 install -m 0755 "$STAGE/byname" "$LIB/$VERSION/byname"
 "$LIB/$VERSION/byname" version >/dev/null
 
-# Keep helper scripts and units in step with the binary.
+# The helper scripts work with any version, and a failed deploy may need the
+# newest byname-restore, so they are updated and never rolled back.
 install -m 0755 "$STAGE/verify.sh" /usr/local/sbin/byname-verify
 install -m 0755 "$STAGE/restore.sh" /usr/local/sbin/byname-restore
-units_changed=0
-for u in byname.service byname-backup.service byname-backup.timer byname-firewall.service; do
-  if ! cmp -s "$STAGE/$u" "/etc/systemd/system/$u"; then
-    install -m 0644 "$STAGE/$u" "/etc/systemd/system/$u"
-    units_changed=1
-  fi
-done
-[[ $units_changed -eq 1 ]] && systemctl daemon-reload && echo "    updated systemd units"
 
 PREV="$(readlink "$LIB/current" 2>/dev/null || true)"
 SNAP=""
@@ -46,12 +42,62 @@ if [[ -n "$PREV" && -f "$DB" ]]; then
   echo "    $SNAP"
 fi
 
-HOST="$(sed -n 's/^BYNAME_HOSTS=\([^,]*\).*/\1/p' /etc/byname/byname.env)"
+# Units in step with the binary; the ones replaced are kept for a rollback.
+OLD_UNITS="$(mktemp -d)"
+trap 'rm -rf "$OLD_UNITS"' EXIT
+units_changed=0
+for u in "${UNITS[@]}"; do
+  if ! cmp -s "$STAGE/$u" "/etc/systemd/system/$u"; then
+    if [[ -f /etc/systemd/system/$u ]]; then cp -p "/etc/systemd/system/$u" "$OLD_UNITS/$u"; else touch "$OLD_UNITS/$u.none"; fi
+    install -m 0644 "$STAGE/$u" "/etc/systemd/system/$u"
+    units_changed=1
+  fi
+done
+if [[ $units_changed -eq 1 ]]; then
+  systemctl daemon-reload
+  echo "    updated systemd units"
+fi
+
+restore_units() {
+  local u
+  [[ $units_changed -eq 1 ]] || return 0
+  for u in "${UNITS[@]}"; do
+    if [[ -f $OLD_UNITS/$u ]]; then
+      install -m 0644 "$OLD_UNITS/$u" "/etc/systemd/system/$u"
+    elif [[ -f $OLD_UNITS/$u.none ]]; then
+      rm -f "/etc/systemd/system/$u"
+    fi
+  done
+  systemctl daemon-reload
+  echo "    put back the previous systemd units" >&2
+}
+
+# The value byname runs with: systemd reads byname.local.env after
+# byname.env, so a setting there wins.
+env_value() {
+  local f line v=""
+  for f in /etc/byname/byname.env /etc/byname/byname.local.env; do
+    [[ -r $f ]] || continue
+    line="$(grep -E "^$1=" "$f" | tail -n 1 || true)"
+    if [[ -n $line ]]; then v="${line#*=}"; fi
+  done
+  v="${v#\"}" v="${v%\"}"
+  printf '%s' "$v"
+}
+# The health check's Host header: the first of the names byname answers to.
+HOSTS="$(env_value BYNAME_HOSTS)"
+HOST="${HOSTS%%,*}"
+HOST="${HOST//[[:space:]]/}"
 
 switch_to() {
   ln -sfn "$1" "$LIB/current.new"
   mv -T "$LIB/current.new" "$LIB/current"
-  systemctl restart byname.service
+  # A version that crash-looped may have hit systemd's start limit, which
+  # would refuse this restart.
+  systemctl reset-failed byname.service 2>/dev/null || true
+  # A failed restart is the health check's to judge: under set -e it would
+  # skip the rollback.
+  systemctl restart byname.service || echo "!! systemctl restart byname.service failed" >&2
 }
 
 healthy() {
@@ -75,8 +121,9 @@ if healthy "$VERSION"; then
 else
   echo "!! $VERSION failed its health check" >&2
   journalctl -u byname.service -n 20 --no-pager >&2 || true
-  if [[ -n "$PREV" && "$PREV" != "$VERSION" ]]; then
+  if [[ -n "$PREV" && ( "$PREV" != "$VERSION" || $units_changed -eq 1 ) ]]; then
     echo "==> rolling back to $PREV" >&2
+    restore_units
     switch_to "$PREV"
     if healthy "$PREV"; then
       echo "==> rolled back; $PREV is live" >&2

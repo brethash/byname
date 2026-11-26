@@ -223,7 +223,8 @@ matches the host, then on the host:
 2. snapshots the database **with the current binary** (before any migration);
 3. switches the `current` symlink atomically and restarts `byname`;
 4. polls `/_/healthz` for the new version for 20 s; on failure it switches
-   back and restarts the previous version.
+   back, puts back the systemd units it replaced, and restarts the previous
+   version.
 
 It refuses a dirty working tree unless you set `FORCE=1`.
 

@@ -163,7 +163,7 @@ for u in "${args[@]:1}"; do units+=("$(unit_name "$u")"); done
 rc=0
 case $cmd in
   --version) printf 'systemd 257 (257.9-1~deb13u1)\n+PAM +AUDIT +SELINUX\n' ;;
-  daemon-reload) ;;
+  daemon-reload | reset-failed) ;;
   is-active)
     if active "${units[0]}"; then [[ $quiet -eq 1 ]] || echo active
     else [[ $quiet -eq 1 ]] || echo inactive; rc=3; fi ;;

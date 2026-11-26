@@ -491,6 +491,37 @@ check "live database untouched" cmp -s "$DB" "$WORK/live.before"
 check "byname never stopped" bash -c "! grep -q 'stop byname' '$STUB_STATE/systemctl.log'"
 is_live v2
 
+# ---------------------------------------------------------------- install.sh rollback details
+section "install.sh: rollback details"
+CASE=install-rollback
+# A broken release whose units differ: the rollback puts the old units back.
+cp /etc/systemd/system/byname.service "$WORK/byname.service.before"
+release v5-units 2 1 >/dev/null
+echo '# changed by v5-units' >> "$WORK/stage-v5-units/byname.service"
+if deploy v5-units; then bad "a broken release deployed"; else ok "broken release with new units refused"; fi
+check "previous byname.service put back" cmp -s /etc/systemd/system/byname.service "$WORK/byname.service.before"
+check "says so" grep -q 'put back the previous systemd units' "$LOG"
+is_live v2
+
+# A failing `systemctl restart` (a dependency, a start limit) still rolls back.
+release v6-nostart 2 >/dev/null
+echo v6-nostart > "$STUB_STATE/fail-start"
+if deploy v6-nostart; then bad "deployed although byname didn't start"; else ok "failed restart refused"; fi
+rm -f "$STUB_STATE/fail-start"
+check "rolled back" grep -q 'rolling back to v2' "$LOG"
+check "current -> v2" test "$(current)" == v2
+is_live v2
+
+# BYNAME_HOSTS in byname.local.env wins, for the health check too.
+cp /etc/byname/byname.local.env "$WORK/local.env.before"
+echo 'BYNAME_HOSTS="links,links.lan"' >> /etc/byname/byname.local.env
+release v7 2 >/dev/null
+if deploy v7; then ok "deploy with BYNAME_HOSTS set in byname.local.env"; else bad "deploy with BYNAME_HOSTS set in byname.local.env failed"; tail -n 8 "$LOG" | sed 's/^/         /'; fi
+is_live v7 links
+cp "$WORK/local.env.before" /etc/byname/byname.local.env
+PATH="$(stub_path)" systemctl restart byname.service
+is_live v7
+
 # ---------------------------------------------------------------- summary
 printf '\n\033[1m== %d checks passed, %d failed\033[0m\n' "$PASSES" "${#FAILED[@]}"
 if [[ ${#FAILED[@]} -gt 0 ]]; then
