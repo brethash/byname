@@ -1,8 +1,8 @@
 # byname
 
-Tired of forgetting that link to your critical google doc, confluence page, favorite [Homestar Runner](https://homestarrunner.com/sbemails/58-dragon) video? If you can remember words, then you can use Byname. 
+Tired of forgetting that link to your critical google doc, confluence page, favorite [Homestar Runner](https://homestarrunner.com/sbemails/58-dragon) video?  
 
-Rather than relying on a million open tabs or remembering complex URLs, simply create semantically worded links you can actually remember.
+Rather than relying on a million open tabs or remembering complex URLs, simply create semantically worded links you can actually remember. If you can remember words, you might love `byname`.
 
 byname is meant to scale from a simple household organization tool to serving full teams and projects. Simply type `me/wiki` in any
 browser and land on your wiki.
