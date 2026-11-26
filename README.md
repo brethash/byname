@@ -1,6 +1,6 @@
 # byname
 
-Tired of forgetting that link to your critical google doc, confluence page, favorite Homestar video? If you can remember words, you can use Byname. 
+Tired of forgetting that link to your critical google doc, confluence page, favorite [Homestar Runner](https://homestarrunner.com/sbemails/58-dragon) video? If you can remember words, then you can use Byname. 
 
 byname is meant to scale from a simple household organization tool to serving full teams and projects. Simply type `me/wiki` in any
 browser and land on your wiki.
