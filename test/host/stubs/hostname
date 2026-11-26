@@ -1,0 +1,3 @@
+#!/bin/sh
+# The machine name hostnamectl (stub) last set.
+cat "${STUB_STATE:?}/hostname" 2>/dev/null || echo localhost

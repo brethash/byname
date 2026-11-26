@@ -1,0 +1,5 @@
+#!/bin/sh
+# Make the file (empty), so the chmod that follows works; allocate nothing.
+printf 'fallocate %s\n' "$*" >> "${STUB_STATE:?}/calls.log"
+for last; do :; done
+: > "$last"

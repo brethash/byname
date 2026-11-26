@@ -1,0 +1,4 @@
+#!/bin/sh
+printf 'hostnamectl %s\n' "$*" >> "${STUB_STATE:?}/calls.log"
+[ "$1" = set-hostname ] && printf '%s\n' "$2" > "$STUB_STATE/hostname"
+exit 0

@@ -1,0 +1,4 @@
+#!/bin/sh
+echo "-- journal (host test stub) --"
+cat "${STUB_STATE:?}/byname.out" 2>/dev/null | tail -5
+exit 0

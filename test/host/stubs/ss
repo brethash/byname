@@ -1,0 +1,7 @@
+#!/bin/sh
+# $STUB_STATE/ss-established, if present, stands in for the established SSH
+# sessions (bootstrap.sh's lockout guard); everything else is the real ss.
+case " $* " in
+  *" established "*) if [ -f "${STUB_STATE:?}/ss-established" ]; then cat "$STUB_STATE/ss-established"; exit 0; fi ;;
+esac
+exec /usr/bin/ss "$@"

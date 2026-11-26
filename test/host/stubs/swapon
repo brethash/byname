@@ -1,0 +1,4 @@
+#!/bin/sh
+# No swap; never turn any on.
+printf 'swapon %s\n' "$*" >> "${STUB_STATE:?}/calls.log"
+exit 0
