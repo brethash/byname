@@ -120,6 +120,13 @@ if [[ "$TAILSCALE" == 0 ]]; then
     pass "tailnet ranges not trusted"
   fi
 else
+input_chain="$(nft list chain inet byname_filter input 2>/dev/null)"
+if grep -q 'iifname != "tailscale0" ip saddr 100.64.0.0/10 drop' <<<"$input_chain" &&
+  grep -q 'iifname != "tailscale0" ip6 saddr fd7a:115c:a1e0::/48 drop' <<<"$input_chain"; then
+  pass "tailnet addresses dropped unless they arrive on tailscale0"
+else
+  fail "the firewall doesn't drop tailnet addresses arriving outside tailscale0 (re-run bootstrap.sh)"
+fi
 after="$(systemctl show byname.service -p After --value 2>/dev/null)"
 [[ " $after " == *" tailscaled.service "* ]] && pass "byname.service starts after tailscaled" ||
   warn "byname.service isn't ordered after tailscaled (re-run bootstrap.sh to add byname.service.d/05-tailscale.conf)"

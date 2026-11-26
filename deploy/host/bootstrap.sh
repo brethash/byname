@@ -561,8 +561,10 @@ elif [[ -n "$SSH_FROM" ]]; then
 fi
 SSH_RULE="$(printf '%s; ' "${SSH_RULES[@]}")"
 if [[ $TAILSCALE -eq 1 ]]; then
+  TAILNET_SPOOF_RULES='iifname != "tailscale0" ip saddr 100.64.0.0/10 drop; iifname != "tailscale0" ip6 saddr fd7a:115c:a1e0::/48 drop'
   TAILNET_RULES='udp dport 41641 accept; iifname "tailscale0" tcp dport 80 accept'
 else
+  TAILNET_SPOOF_RULES="# (no Tailscale: byname trusts no tailnet addresses)"
   TAILNET_RULES="# (no Tailscale)"
 fi
 if [[ -n "$PUBLIC_DOMAIN" ]]; then
@@ -571,7 +573,7 @@ else
   PUBLIC_RULE="# (no public domain; bootstrap.sh --public-domain opens 80 and 443)"
 fi
 sed -e "s|@SSH_RULE@|$SSH_RULE|" -e "s|@LAN_HTTP_RULE@|$LAN_HTTP_RULE|" \
-  -e "s|@TAILNET_RULES@|$TAILNET_RULES|" -e "s|@PUBLIC_RULE@|$PUBLIC_RULE|" \
+  -e "s|@TAILNET_SPOOF_RULES@|$TAILNET_SPOOF_RULES|" -e "s|@TAILNET_RULES@|$TAILNET_RULES|" -e "s|@PUBLIC_RULE@|$PUBLIC_RULE|" \
   "$DEPLOY_DIR/host/firewall.nft.in" > /etc/byname/firewall.nft.new
 nft -c -f /etc/byname/firewall.nft.new || die "firewall rules failed to parse"
 # Lockout guard: an OpenSSH session from an address the new rules don't allow
@@ -599,12 +601,27 @@ for line in sys.stdin:
   fi
 fi
 mv /etc/byname/firewall.nft.new /etc/byname/firewall.nft
-# Debian's nftables.service flushes the whole ruleset (including tailscaled's).
-systemctl disable --now nftables.service >/dev/null 2>&1 || true
+# Debian's nftables.service flushes the whole ruleset, tailscaled's included,
+# when it starts, reloads or stops. Disable it without stopping it. If it is
+# running, stop it with its ExecStop (nft flush ruleset) emptied, so neither
+# this nor a later stop flushes anything; the rules it loaded stay.
+systemctl disable nftables.service >/dev/null 2>&1 || true
+if systemctl is-active --quiet nftables.service 2>/dev/null; then
+  install -d -m 0755 /run/systemd/system/nftables.service.d
+  printf '# byname bootstrap.sh: stop without flushing the ruleset\n[Service]\nExecStop=\n' \
+    > /run/systemd/system/nftables.service.d/50-byname-no-flush.conf
+  systemctl daemon-reload
+  systemctl stop nftables.service
+  rm -f /run/systemd/system/nftables.service.d/50-byname-no-flush.conf
+  ok "stopped Debian's nftables.service without flushing the ruleset"
+fi
 install -m 0644 "$DEPLOY_DIR/systemd/byname-firewall.service" /etc/systemd/system/byname-firewall.service
 systemctl daemon-reload
 systemctl enable byname-firewall.service >/dev/null 2>&1
-systemctl restart byname-firewall.service
+# Reload swaps the table in one transaction (ExecReload is a single nft -f); a
+# restart would delete it first (ExecStop) and leave a moment with no filter.
+systemctl reload-or-restart byname-firewall.service
+[[ $TAILSCALE -eq 1 ]] && ok "tailnet addresses dropped unless they arrive on tailscale0"
 if [[ "$PLATFORM" == cloud ]]; then
   allowed=""
   [[ $TAILSCALE -eq 1 ]] && allowed+="tcp/80 and tcp/22 on tailscale0, udp/41641, "

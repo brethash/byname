@@ -38,6 +38,13 @@ if ip link add lan0 type dummy 2>/dev/null; then
     ip link set tailscale0 up && HAVE_IFACES=1
 fi
 [[ $HAVE_IFACES -eq 1 ]] || note "no dummy interfaces here: the LAN-address checks are skipped"
+# Debian's nftables.service flushes the whole ruleset when it stops. The
+# package ships it; this is in case it ever doesn't.
+NFT_UNIT=/usr/lib/systemd/system/nftables.service
+if ! grep -qs '^ExecStop=/usr/sbin/nft flush ruleset' "$NFT_UNIT" /lib/systemd/system/nftables.service; then
+  mkdir -p "${NFT_UNIT%/*}"
+  printf '[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/nft -f /etc/nftables.conf\nExecReload=/usr/sbin/nft -f /etc/nftables.conf\nExecStop=/usr/sbin/nft flush ruleset\n' > "$NFT_UNIT"
+fi
 reset_host
 
 T=(--admin-user admin)  # every run
@@ -95,8 +102,9 @@ section "bootstrap.sh: every platform and access combination"
 TS_ALLOW="100.64.0.0/10,fd7a:115c:a1e0::/48,127.0.0.1/32,::1/128"
 LAN_IP_HOST=""
 [[ $HAVE_IFACES -eq 1 ]] && LAN_IP_HOST=",192.168.1.50"
-FW_TS=('+udp dport 41641 accept' '+iifname "tailscale0" tcp dport 80 accept')
-FW_NO_TS=('-udp dport 41641 accept' '-tailscale0')
+FW_TS=('+udp dport 41641 accept' '+iifname "tailscale0" tcp dport 80 accept'
+  '+iifname != "tailscale0" ip saddr 100.64.0.0/10 drop' '+iifname != "tailscale0" ip6 saddr fd7a:115c:a1e0::/48 drop')
+FW_NO_TS=('-udp dport 41641 accept' '-iifname "tailscale0"' '-iifname != "tailscale0"' '-100.64.0.0/10')
 FW_NO_LAN=('-ip saddr 192.168.1.0/24 tcp dport 80 accept')
 # OpenSSH from anywhere (--ssh-from any): the bare rule, not one limited by interface or address.
 SSH_ANY='(^|;)[[:space:]]*tcp dport 22 accept;'
@@ -112,6 +120,9 @@ after_run() {
   check "host.conf written" test -s /etc/byname/host.conf
   check "byname.service installed" test -f /etc/systemd/system/byname.service
   check "byname-firewall.service enabled" called '^systemctl enable byname-firewall.service'
+  # Reloaded in one transaction, never deleted first by a restart.
+  check "firewall reloaded, not restarted" called '^systemctl reload-or-restart byname-firewall.service'
+  check "firewall never restarted" bash -c "! grep -q '^systemctl restart byname-firewall' '$STUB_STATE/systemctl.log'"
   check "byname-verify and byname-restore installed" test -x /usr/local/sbin/byname-verify -a -x /usr/local/sbin/byname-restore
   # byname.service itself never pulls in tailscaled; the drop-in does, with Tailscale.
   expect /etc/systemd/system/byname.service '!^(Wants|After)=.*tailscaled'
@@ -170,6 +181,12 @@ if run_bootstrap pi-tailscale-lan-domain ok "${T[@]}" "${PI[@]}" --lan-access --
   env_is BYNAME_PUBLIC_LISTEN ":443"
   expect /etc/systemd/system/byname.service.d/20-public.conf '+Requires=byname-firewall.service' '+ImportCredential=byname.*'
   check_firewall "${FW_TS[@]}" "${FW_PUBLIC[@]}" '+ip saddr 192.168.1.0/24 tcp dport 80 accept'
+  # Tailnet addresses are dropped before anything opens port 80 beyond tailscale0.
+  first_line() { grep -nF -- "$1" /etc/byname/firewall.nft | head -n 1 | cut -d: -f1; }
+  spoof="$(first_line 'ip saddr 100.64.0.0/10 drop')"
+  check "spoofed tailnet addresses dropped before the LAN rule" test "${spoof:-999}" -lt "$(first_line 'ip saddr 192.168.1.0/24 tcp dport 80 accept')"
+  check "and before the public rule" test "${spoof:-999}" -lt "$(first_line 'tcp dport { 80, 443 } accept')"
+  check "loaded in the kernel" bash -c "nft list chain inet byname_filter input | grep -q 'iifname != \"tailscale0\" ip saddr 100.64.0.0/10 drop'"
 fi
 reset_host
 
@@ -206,9 +223,12 @@ if run_bootstrap cloud-tailscale ok "${T[@]}" --platform cloud; then
   check_firewall "${FW_TS[@]}" "${FW_NO_LAN[@]}" "${FW_NO_PUBLIC[@]}" '+iifname "tailscale0" tcp dport 22 accept' '-192.168.1.0/24' "!$SSH_ANY"
   cp /etc/byname/byname.env "$WORK/env.first"
   cp /etc/byname/firewall.nft "$WORK/fw.first"
+  : > "$STUB_STATE/systemctl.log"
   if run_bootstrap cloud-tailscale-again ok "${T[@]}" --platform cloud; then
     check "re-run: same byname.env" cmp -s /etc/byname/byname.env "$WORK/env.first"
     check "re-run: same firewall" cmp -s /etc/byname/firewall.nft "$WORK/fw.first"
+    check "re-run: the loaded firewall was reloaded (ExecReload)" called 'byname-firewall.service ExecReload: /usr/sbin/nft -f /etc/byname/firewall.nft'
+    check "re-run: its table was never deleted (ExecStop)" bash -c "! grep -q 'byname-firewall.service ExecStop' '$STUB_STATE/systemctl.log'"
   fi
 fi
 reset_host
@@ -251,6 +271,21 @@ TAILSCALE_INSTALLED=0
 if run_bootstrap cloud-no-tailscale-domain ok "${T[@]}" --platform cloud --no-tailscale --ssh-from any --public-domain me.example.com; then
   after_run
   check_firewall "${FW_NO_TS[@]}" "${FW_PUBLIC[@]}" "~$SSH_ANY"
+fi
+reset_host
+
+# ---------------------------------------------------------------- nftables.service
+section "bootstrap.sh: Debian's nftables.service running"
+# Running and enabled, next to tailscaled's own rules (a stand-in table).
+touch "$STUB_STATE/units/nftables.service.active" "$STUB_STATE/units/nftables.service.enabled"
+nft add table inet ts_standin
+if run_bootstrap nftables-service ok "${T[@]}" --platform cloud; then
+  check "tailscaled's rules survive (nothing flushed the ruleset)" nft list table inet ts_standin
+  check "nftables.service disabled" test ! -e "$STUB_STATE/units/nftables.service.enabled"
+  check "nftables.service stopped" test ! -e "$STUB_STATE/units/nftables.service.active"
+  check "its flush never ran" bash -c "! grep -q 'nft flush ruleset' '$STUB_STATE/systemctl.log'"
+  check "the no-flush drop-in is gone" test ! -e /run/systemd/system/nftables.service.d/50-byname-no-flush.conf
+  check_firewall "${FW_TS[@]}"
 fi
 reset_host
 
