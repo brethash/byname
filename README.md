@@ -10,6 +10,11 @@ browser and land on your wiki.
 Hosting is simple and flexible: one small Go program with a SQLite database, running on
 a Raspberry Pi at home or a $5/month cloud server.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/home-dark.png">
+  <img alt="The byname home page: a form to create a link, and the most popular links with their click counts" src="docs/screenshots/home-light.png">
+</picture>
+
 ## Who can use it
 
 People reach byname in up to three ways, and you choose which ones are on.
@@ -45,6 +50,12 @@ nothing else. A Pi can use the same sign-in as a cloud server: forward ports
 - The home page has search, popular links, the newest links and recent
   changes. Browsers can add byname as a search engine.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/create-dark.png">
+  <img alt="Opening me/oncal, which doesn't exist: byname suggests me/oncall and offers a form to create me/oncal" src="docs/screenshots/create-light.png">
+</picture>
+
+
 **Accountability without admins**
 
 - Every change is recorded with who made it: the Tailscale user and device,
@@ -54,6 +65,17 @@ nothing else. A Pi can use the same sign-in as a cloud server: forward ports
 - Any earlier version of a link can be restored with one click. Deleted
   links can be restored too.
 - Editing limits per device and per account stop runaway scripts.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/activity-dark.png">
+  <img alt="The activity page: every change, newest first, made by people on Tailscale devices, signed in with Slack or Google, or on the home network" src="docs/screenshots/activity-light.png">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/detail-dark.png">
+  <img alt="A link's page: its destination, clicks and history, with a button to restore each earlier version" src="docs/screenshots/detail-light.png">
+</picture>
+
 
 **Sign-in for the internet**
 
