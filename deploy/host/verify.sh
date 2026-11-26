@@ -44,7 +44,7 @@ if [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" == "yes" ]]; 
 
 section "SSH"
 sshcfg="$(sshd -T 2>/dev/null)"
-for kv in "passwordauthentication no" "permitrootlogin no" "kbdinteractiveauthentication no"; do
+for kv in "passwordauthentication no" "permitrootlogin no" "kbdinteractiveauthentication no" "trustedusercakeys none"; do
   if grep -qx "$kv" <<<"$sshcfg"; then pass "sshd $kv"; else fail "sshd should have: $kv"; fi
 done
 

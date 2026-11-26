@@ -303,7 +303,13 @@ else
   step "OpenSSH (key-only; reachable as --ssh-from says)"
 fi
 # 01- sorts before any Imager/cloud-init drop-in; sshd keeps the first value.
-cat > /etc/ssh/sshd_config.d/01-byname-hardening.conf <<EOF
+SSHD_DROPIN=/etc/ssh/sshd_config.d/01-byname-hardening.conf
+# Tested before it goes in: a bad file in place would lock you out at sshd's
+# next restart. The candidate's name doesn't match *.conf, so sshd ignores it.
+sshd_new="$(mktemp /etc/ssh/sshd_config.d/.01-byname-hardening.XXXXXX)"
+sshd_test="$(mktemp /etc/ssh/.byname-sshd-test.XXXXXX)"
+trap 'rm -f "$sshd_new" "$sshd_test"' EXIT
+cat > "$sshd_new" <<EOF
 # Managed by byname bootstrap.sh
 PermitRootLogin no
 PasswordAuthentication no
@@ -311,13 +317,24 @@ KbdInteractiveAuthentication no
 PubkeyAuthentication yes
 AuthenticationMethods publickey
 AllowUsers $ADMIN_USER
+# Only the keys in authorized_keys, no certificate authority (AWS Lightsail's
+# images trust Amazon's, for its browser-based SSH).
+TrustedUserCAKeys none
 X11Forwarding no
 MaxAuthTries 3
 LoginGraceTime 20
 EOF
-sshd -t || die "sshd config test failed; not reloading"
+chmod 0644 "$sshd_new"
+# Test it as sshd will read it: first, then the rest of the configuration.
+printf 'Include %s\nInclude /etc/ssh/sshd_config\n' "$sshd_new" > "$sshd_test"
+if ! out="$(sshd -t -f "$sshd_test" 2>&1)"; then
+  printf '%s\n' "$out" | sed 's/^/    /'
+  die "sshd rejects this configuration (above); nothing changed. Fix it, then re-run"
+fi
+mv "$sshd_new" "$SSHD_DROPIN"
+sshd -t || die "sshd config test failed with $SSHD_DROPIN in place; fix it before sshd restarts"
 systemctl reload ssh 2>/dev/null || systemctl reload sshd
-ok "sshd: keys only, root login off, AllowUsers $ADMIN_USER"
+ok "sshd: keys only (no certificate authorities), root login off, AllowUsers $ADMIN_USER"
 
 # ---------------------------------------------------------------- updates
 step "Unattended upgrades"

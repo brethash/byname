@@ -116,7 +116,9 @@ after_run() {
   check "hostname set" grep -qx "${1:-me}" "$STUB_STATE/hostname"
   check "/etc/hosts names this machine" grep -qP "^127\\.0\\.1\\.1\\t${1:-me}\$" /etc/hosts
   check "sshd accepts the hardened config" sshd -t
-  expect /etc/ssh/sshd_config.d/01-byname-hardening.conf '+AllowUsers admin' '+PasswordAuthentication no'
+  expect /etc/ssh/sshd_config.d/01-byname-hardening.conf '+AllowUsers admin' '+PasswordAuthentication no' '+TrustedUserCAKeys none'
+  check "sshd trusts no certificate authority" bash -c "sshd -T | grep -qx 'trustedusercakeys none'"
+  check "no candidate sshd files left" bash -c "! compgen -G '/etc/ssh/sshd_config.d/.01-byname-hardening.*' && ! compgen -G '/etc/ssh/.byname-sshd-test.*'"
   check "host.conf written" test -s /etc/byname/host.conf
   check "byname.service installed" test -f /etc/systemd/system/byname.service
   check "byname-firewall.service enabled" called '^systemctl enable byname-firewall.service'
@@ -271,6 +273,22 @@ TAILSCALE_INSTALLED=0
 if run_bootstrap cloud-no-tailscale-domain ok "${T[@]}" --platform cloud --no-tailscale --ssh-from any --public-domain me.example.com; then
   after_run
   check_firewall "${FW_NO_TS[@]}" "${FW_PUBLIC[@]}" "~$SSH_ANY"
+fi
+reset_host
+
+# ---------------------------------------------------------------- sshd
+section "bootstrap.sh: an sshd configuration that fails its test"
+id admin2 >/dev/null 2>&1 || useradd --create-home --shell /bin/bash admin2
+install -d -m 0700 -o admin2 -g admin2 /home/admin2/.ssh
+cp /home/admin/.ssh/authorized_keys /home/admin2/.ssh/authorized_keys
+if run_bootstrap sshd-good ok "${T[@]}" --platform cloud; then
+  cp /etc/ssh/sshd_config.d/01-byname-hardening.conf "$WORK/sshd-dropin.before"
+  echo 'NoSuchOption yes' > /etc/ssh/sshd_config.d/99-host-test-broken.conf
+  if run_bootstrap sshd-broken 'sshd rejects this configuration' --admin-user admin2 --platform cloud; then
+    check "the working drop-in is untouched" cmp -s /etc/ssh/sshd_config.d/01-byname-hardening.conf "$WORK/sshd-dropin.before"
+    check "no candidate sshd files left" bash -c "! compgen -G '/etc/ssh/sshd_config.d/.01-byname-hardening.*' && ! compgen -G '/etc/ssh/.byname-sshd-test.*'"
+  fi
+  rm -f /etc/ssh/sshd_config.d/99-host-test-broken.conf
 fi
 reset_host
 
