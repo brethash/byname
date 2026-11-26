@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -73,7 +74,7 @@ func TestMaxLinks(t *testing.T) {
 	if _, err := s.Restore(ctx, a.ID, alice); !errors.Is(err, ErrLimit) {
 		t.Fatalf("restore over cap err = %v", err)
 	}
-	hist, _ := s.History(ctx, a.ID)
+	hist, _ := s.History(ctx, a.ID, 0, 0)
 	if _, err := s.RevertTo(ctx, hist[len(hist)-1].ID, alice); !errors.Is(err, ErrLimit) {
 		t.Fatalf("revert-undelete over cap err = %v", err)
 	}
@@ -97,7 +98,7 @@ func TestUpdateConcurrencyAndHistory(t *testing.T) {
 	if _, err := s.Update(ctx, l.ID, l2.Rev, l2.Fields(), bob); err != nil {
 		t.Fatal(err)
 	}
-	hist, err := s.History(ctx, l.ID)
+	hist, err := s.History(ctx, l.ID, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ func TestDeleteRestoreRevert(t *testing.T) {
 		t.Fatalf("restore = %+v, %v", r, err)
 	}
 	// Revert to the create event's version.
-	hist, _ := s.History(ctx, l.ID)
+	hist, _ := s.History(ctx, l.ID, 0, 0)
 	create := hist[len(hist)-1]
 	if create.Action != "create" {
 		t.Fatalf("oldest event = %s", create.Action)
@@ -158,7 +159,7 @@ func TestDeleteRestoreRevert(t *testing.T) {
 		t.Fatalf("revert = %+v, %v", v, err)
 	}
 	// A delete event has no "after" version.
-	hist, _ = s.History(ctx, l.ID)
+	hist, _ = s.History(ctx, l.ID, 0, 0)
 	for _, e := range hist {
 		if e.Action == "delete" {
 			if _, err := s.RevertTo(ctx, e.ID, bob); !errors.Is(err, ErrNotRevertible) {
@@ -436,5 +437,54 @@ func TestPragmasApplied(t *testing.T) {
 	s.db.QueryRow(`PRAGMA busy_timeout`).Scan(&busy)
 	if mode != "wal" || sync != 2 || fk != 1 || busy != 5000 {
 		t.Fatalf("journal_mode=%s synchronous=%d foreign_keys=%d busy_timeout=%d", mode, sync, fk, busy)
+	}
+}
+
+func TestHistoryPages(t *testing.T) {
+	s := openTest(t)
+	l := mustCreate(t, s, "h", "https://v0.example.com")
+	for i := 1; i < 8; i++ {
+		var err error
+		if l, err = s.Update(ctx, l.ID, l.Rev, Fields{Name: "h", Target: "https://v" + strconv.Itoa(i) + ".example.com"}, alice); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := s.History(ctx, l.ID, 0, 0)
+	if err != nil || len(all) != 8 {
+		t.Fatalf("History = %d entries, %v", len(all), err)
+	}
+	var paged []Event
+	for before := int64(0); ; {
+		page, err := s.History(ctx, l.ID, before, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) > 3 {
+			t.Fatalf("page of %d entries, limit 3", len(page))
+		}
+		paged = append(paged, page...)
+		if len(page) < 3 {
+			break
+		}
+		before = page[len(page)-1].ID
+	}
+	if len(paged) != len(all) {
+		t.Fatalf("pages hold %d entries, want %d", len(paged), len(all))
+	}
+	for i := range all {
+		if paged[i].ID != all[i].ID {
+			t.Fatalf("entry %d: %d, want %d (newest first, no gaps)", i, paged[i].ID, all[i].ID)
+		}
+	}
+}
+
+func TestListOffset(t *testing.T) {
+	s := openTest(t)
+	for _, n := range []string{"a", "b", "c"} {
+		mustCreate(t, s, n, "https://"+n+".example.com")
+	}
+	got, err := s.List(ctx, ListOptions{Limit: 2, Offset: 1})
+	if err != nil || strings.Join(names(got), ",") != "b,c" {
+		t.Fatalf("List(offset 1) = %v, %v", names(got), err)
 	}
 }

@@ -495,6 +495,7 @@ type ListOptions struct {
 	Query   string // substring match on name, target, description
 	Sort    string // "name" (default), "recent", "popular", "created"
 	Limit   int    // 0 = no limit
+	Offset  int    // skip this many first (with Limit, for paging)
 	Deleted bool   // list deleted links instead of live ones
 }
 
@@ -529,6 +530,9 @@ func (s *Store) List(ctx context.Context, opts ListOptions) ([]Link, error) {
 	q := `SELECT ` + linkCols + ` FROM links WHERE ` + strings.Join(where, " AND ") + ` ORDER BY ` + order
 	if opts.Limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", opts.Limit)
+		if opts.Offset > 0 {
+			q += fmt.Sprintf(" OFFSET %d", opts.Offset)
+		}
 	}
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -629,9 +633,21 @@ func (s *Store) events(ctx context.Context, where string, limit int, args ...any
 	return out, rows.Err()
 }
 
-// History returns a link's audit entries, newest first.
-func (s *Store) History(ctx context.Context, linkID int64) ([]Event, error) {
-	return s.events(ctx, `WHERE e.link_id = ?`, 0, linkID)
+// MaxHistory is the most audit entries History returns at once.
+const MaxHistory = 500
+
+// History returns up to limit of a link's audit entries, newest first: the
+// newest ones when before is 0, otherwise those older than the entry with id
+// before (the last one of the previous page). limit is capped at MaxHistory,
+// and 0 means MaxHistory, so a link with a long history never loads it all.
+func (s *Store) History(ctx context.Context, linkID, before int64, limit int) ([]Event, error) {
+	if limit <= 0 || limit > MaxHistory {
+		limit = MaxHistory
+	}
+	if before > 0 {
+		return s.events(ctx, `WHERE e.link_id = ? AND e.id < ?`, limit, linkID, before)
+	}
+	return s.events(ctx, `WHERE e.link_id = ?`, limit, linkID)
 }
 
 // RecentEvents returns the newest audit entries across all links.

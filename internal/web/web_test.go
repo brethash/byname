@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -371,7 +372,7 @@ func TestFormCreateEditDeleteRestoreRevert(t *testing.T) {
 	expectStatus(t, h.do("GET", "/docs", ""), http.StatusFound)
 
 	// Revert to the first version.
-	hist, _ := h.svc.Store.History(context.Background(), l.ID)
+	hist, _ := h.svc.Store.History(context.Background(), l.ID, 0, 0)
 	first := hist[len(hist)-1]
 	w = h.do("POST", "/_/events/"+strconv.FormatInt(first.ID, 10)+"/revert", "", sameOrigin())
 	expectStatus(t, w, http.StatusSeeOther)
@@ -645,4 +646,88 @@ func TestMiscEndpoints(t *testing.T) {
 		}
 	}
 	expectStatus(t, h.do("GET", "/_/static/", ""), http.StatusNotFound) // no listings
+}
+
+// A link's page shows the newest history entries, with older ones a link
+// away; restoring a version from an older page still works.
+func TestHistoryIsPaged(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	l := h.create("busy", "https://v0.example.com")
+	for i := 1; i <= historyPageSize+10; i++ {
+		var err error
+		l, err = h.svc.Update(ctx, l.ID, l.Rev, app.Input{Name: "busy", Target: "https://v" + strconv.Itoa(i) + ".example.com"}, store.Actor{IP: "100.64.0.1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := strconv.FormatInt(l.ID, 10)
+	rows := func(body string) int { return strings.Count(body, `<td title=`) }
+
+	body := h.do("GET", "/_/links/"+id, "").Body.String()
+	if n := rows(body); n != historyPageSize {
+		t.Fatalf("first page shows %d entries, want %d", n, historyPageSize)
+	}
+	older := regexp.MustCompile(`href="(/_/links/` + id + `\?before=\d+)"`).FindStringSubmatch(body)
+	if older == nil {
+		t.Fatal("no link to older changes")
+	}
+	// The preview (me/busy+) pages the same way.
+	if n := rows(h.do("GET", "/busy+", "").Body.String()); n != historyPageSize {
+		t.Fatalf("preview shows %d entries", n)
+	}
+
+	body = h.do("GET", older[1], "").Body.String()
+	if n := rows(body); n != 11 {
+		t.Fatalf("older page shows %d entries, want 11", n)
+	}
+	if strings.Contains(body, "?before=") || !strings.Contains(body, "Newest changes") {
+		t.Fatal("last page links further back, or not back to the newest")
+	}
+	first := regexp.MustCompile(`action="/_/events/(\d+)/revert"`).FindAllStringSubmatch(body, -1)
+	if len(first) == 0 {
+		t.Fatal("no restore buttons on the older page")
+	}
+	w := h.do("POST", "/_/events/"+first[len(first)-1][1]+"/revert", "", sameOrigin())
+	expectStatus(t, w, http.StatusSeeOther)
+	if loc := h.do("GET", "/busy", "").Header().Get("Location"); loc != "https://v0.example.com" {
+		t.Fatalf("after restoring the oldest version → %q", loc)
+	}
+}
+
+// The list shows listPageSize links a page and says so, with a way on.
+func TestListIsPaged(t *testing.T) {
+	h := newHarness(t)
+	items := make([]store.Fields, listPageSize+5)
+	for i := range items {
+		n := fmt.Sprintf("l%05d", i)
+		items[i] = store.Fields{Name: n, Target: "https://" + n + ".example.com"}
+	}
+	if r, err := h.svc.Store.Import(context.Background(), items, store.Actor{IP: "local"}, store.ImportOptions{}); err != nil || !r.Committed {
+		t.Fatalf("import = %+v, %v", r, err)
+	}
+	rows := func(body string) int { return strings.Count(body, `<td class="num">`) }
+
+	body := h.do("GET", "/_/links?sort=name", "").Body.String()
+	if n := rows(body); n != listPageSize {
+		t.Fatalf("first page shows %d links, want %d", n, listPageSize)
+	}
+	if !strings.Contains(body, "Showing 1–1000") || !strings.Contains(body, "page=2") {
+		t.Fatal("first page doesn't say it's partial, or has no next link")
+	}
+	body = h.do("GET", "/_/links?sort=name&page=2", "").Body.String()
+	if n := rows(body); n != 5 || !strings.Contains(body, "Showing 1001–1005") || !strings.Contains(body, "l01004") {
+		t.Fatalf("second page shows %d links", n)
+	}
+	if strings.Contains(body, "page=3") || !strings.Contains(body, "page=1") {
+		t.Fatal("second page links on, or not back")
+	}
+	// Small lists have no pager; nonsense pages fall back to the first.
+	for _, q := range []string{"?q=l00001", "?page=0", "?page=-3", "?page=x", "?page=99999999999999999999"} {
+		w := h.do("GET", "/_/links"+q, "")
+		expectStatus(t, w, http.StatusOK)
+	}
+	if body := h.do("GET", "/_/links?q=l00001", "").Body.String(); strings.Contains(body, "Showing") {
+		t.Fatal("a one-page result shows a pager")
+	}
 }

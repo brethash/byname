@@ -63,7 +63,7 @@ func TestCreateValidates(t *testing.T) {
 	if err != nil || l.Description != "two lines" {
 		t.Fatalf("create = %+v, %v", l, err)
 	}
-	hist, err := s.Store.History(ctx, l.ID)
+	hist, err := s.Store.History(ctx, l.ID, 0, 0)
 	if err != nil || len(hist) != 1 || *hist[0].After != l.Fields() {
 		t.Fatalf("history = %+v, %v; link %+v", hist, err, l.Fields())
 	}

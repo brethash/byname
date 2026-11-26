@@ -356,7 +356,7 @@ func TestPublicSignInFlow(t *testing.T) {
 	if err != nil || l.CreatedBy != "alice@gmail.com (via Google)" {
 		t.Fatalf("created by %q (%v)", l.CreatedBy, err)
 	}
-	events, _ := h.svc.Store.History(t.Context(), l.ID)
+	events, _ := h.svc.Store.History(t.Context(), l.ID, 0, 0)
 	if len(events) != 1 || events[0].Actor.IP != "198.51.100.4" || events[0].Actor.Login != "alice@gmail.com" {
 		t.Fatalf("audit actor = %+v", events)
 	}

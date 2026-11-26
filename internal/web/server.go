@@ -330,6 +330,14 @@ type view struct {
 	Count       int
 	Sort        string
 	ShowDeleted bool
+	// List paging: links First..Last are shown; PrevPage and NextPage are
+	// page numbers, 0 when there is none.
+	First, Last        int
+	PrevPage, NextPage int
+	// History paging: OlderThan is the id of the oldest entry shown when
+	// there are older ones; OlderHistory is set on a page of older entries.
+	OlderThan    int64
+	OlderHistory bool
 
 	Form    formData
 	Missing string // not-found name

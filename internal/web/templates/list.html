@@ -21,7 +21,17 @@
   <td title="{{when .UpdatedAt}}">{{ago .UpdatedAt}}<div class="muted small">{{.UpdatedBy}}</div></td>
 </tr>{{end}}
 </tbody></table></div>
+{{template "pager" .}}
 {{else}}
-<p class="muted">No links{{if .Query}} match “{{.Query}}”{{end}}.{{if and .Query (not .ShowDeleted)}} <a href="/_/new?name={{.Query}}">Create {{host}}/{{.Query}}</a>{{end}}</p>
+<p class="muted">No links{{if .Query}} match “{{.Query}}”{{end}}{{if .PrevPage}} on this page{{end}}.{{if and .Query (not .ShowDeleted) (not .PrevPage)}} <a href="/_/new?name={{.Query}}">Create {{host}}/{{.Query}}</a>{{end}}</p>
+{{template "pager" .}}
 {{end}}
 {{end}}
+
+{{define "pager"}}{{if or .PrevPage .NextPage}}
+<nav class="pager" aria-label="Pages">
+  {{if .PrevPage}}<a href="/_/links?q={{.Query}}&sort={{.Sort}}{{if .ShowDeleted}}&deleted=1{{end}}&page={{.PrevPage}}">← Previous</a>{{end}}
+  {{if .First}}<span class="muted">Showing {{.First}}–{{.Last}}</span>{{end}}
+  {{if .NextPage}}<a href="/_/links?q={{.Query}}&sort={{.Sort}}{{if .ShowDeleted}}&deleted=1{{end}}&page={{.NextPage}}">Next →</a>{{end}}
+</nav>
+{{end}}{{end}}
