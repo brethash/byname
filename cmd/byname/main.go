@@ -202,6 +202,12 @@ func serve(args []string) error {
 		*snapDir = filepath.Clean(*snapDir)
 	}
 
+	pub, err := parsePublic(*publicURL, *publicListen)
+	if err != nil {
+		return err
+	}
+	*publicListen = pub.listen
+
 	st, err := store.Open(*dbPath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
@@ -209,7 +215,7 @@ func serve(args []string) error {
 	defer st.Close()
 
 	svc := app.New(st, app.Config{
-		SelfHosts:     hostList,
+		SelfHosts:     selfHosts(hostList, pub.host),
 		MaxLinks:      *maxLinks,
 		ClickFlush:    *clickFlush,
 		SnapshotDir:   *snapDir,
@@ -269,24 +275,7 @@ func serve(args []string) error {
 		Providers:     providers,
 		SessionTTL:    *sessionTTL,
 	}
-	var publicHost string
-	if *publicURL != "" {
-		u, err := url.Parse(*publicURL)
-		if err != nil {
-			return fmt.Errorf("--public-url: %w", err)
-		}
-		publicHost = strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
-		if *publicListen == "" {
-			*publicListen = ":443"
-			if strings.HasSuffix(publicHost, ".ts.net") {
-				*publicListen = "unix:/run/byname/public.sock"
-			}
-		}
-		webCfg.PublicBehindTailscale = strings.HasPrefix(*publicListen, "unix:")
-		if !webCfg.PublicBehindTailscale && u.Port() != "" && u.Port() != "443" {
-			return errors.New("--public-url: a directly served address must use the default https port")
-		}
-	}
+	webCfg.PublicBehindTailscale = pub.behindTailscale
 	handler, err := web.New(webCfg, svc, who)
 	if err != nil {
 		return err
@@ -313,13 +302,13 @@ func serve(args []string) error {
 	var pubSrv *http.Server
 	var pubLn net.Listener
 	pubTLS := false
-	switch pub := handler.Public(); {
-	case pub == nil:
+	switch pubHandler := handler.Public(); {
+	case pubHandler == nil:
 	case webCfg.PublicBehindTailscale:
 		if pubLn, err = listenUnix(*publicListen); err != nil {
 			return fmt.Errorf("--public-listen: %w", err)
 		}
-		pubSrv = newServer(pub)
+		pubSrv = newServer(pubHandler)
 	default:
 		// Serve the public domain directly. Certificates come from Let's
 		// Encrypt, only ever for the public name (HostWhitelist), through the
@@ -331,7 +320,7 @@ func serve(args []string) error {
 		}
 		m := &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(publicHost),
+			HostPolicy: autocert.HostWhitelist(pub.host),
 			Cache:      autocert.DirCache(*acmeDir),
 			Email:      *acmeEmail,
 		}
@@ -340,7 +329,7 @@ func serve(args []string) error {
 			return fmt.Errorf("--public-listen: %w", err)
 		}
 		pubLn = guard(tcp, handler.Trusted, *maxConns, *maxPerPeer, log)
-		pubSrv = newServer(pub)
+		pubSrv = newServer(pubHandler)
 		pubSrv.TLSConfig = m.TLSConfig()
 		pubSrv.TLSConfig.MinVersion = tls.VersionTLS12
 		// Internet scanners cause a steady trickle of TLS handshake errors;
@@ -392,6 +381,48 @@ func serve(args []string) error {
 	}
 	<-bgDone // flushes click counts
 	return nil
+}
+
+// publicAddr is where and how the public address is served.
+type publicAddr struct {
+	host            string // lower case, no port or trailing dot; "" when off
+	listen          string // ":443" or "unix:/path"
+	behindTailscale bool   // served to Tailscale Funnel over a unix socket
+}
+
+// parsePublic reads --public-url and --public-listen. web.New checks the
+// URL's shape in detail; this decides only where it is served.
+func parsePublic(publicURL, listen string) (publicAddr, error) {
+	if publicURL == "" {
+		return publicAddr{listen: listen}, nil
+	}
+	u, err := url.Parse(publicURL)
+	if err != nil {
+		return publicAddr{}, fmt.Errorf("--public-url: %w", err)
+	}
+	p := publicAddr{host: strings.TrimSuffix(strings.ToLower(u.Hostname()), "."), listen: listen}
+	if p.listen == "" {
+		p.listen = ":443"
+		if strings.HasSuffix(p.host, ".ts.net") {
+			p.listen = "unix:/run/byname/public.sock"
+		}
+	}
+	p.behindTailscale = strings.HasPrefix(p.listen, "unix:")
+	if !p.behindTailscale && u.Port() != "" && u.Port() != "443" {
+		return publicAddr{}, errors.New("--public-url: a directly served address must use the default https port")
+	}
+	return p, nil
+}
+
+// selfHosts are the names links must not point at, because the link would
+// redirect to itself: every --hosts name and the public address's. In
+// --public-domain mode the public name is not among --hosts.
+func selfHosts(hosts []string, publicHost string) []string {
+	out := append([]string(nil), hosts...)
+	if publicHost != "" {
+		out = append(out, publicHost)
+	}
+	return out
 }
 
 // listenUnix listens on "unix:/path", owner-only. Only tailscaled (root) and
@@ -580,6 +611,7 @@ func importLinks(args []string) error {
 	fs := newFlags("import")
 	dbPath := fs.String("db", defaultDB, "SQLite database path")
 	hosts := fs.String("hosts", "", "the service's host names (rejects self-pointing links), as for serve")
+	publicURL := fs.String("public-url", "", "the service's public address, as for serve (rejects links pointing at it)")
 	overwrite := fs.Bool("overwrite", false, "update links that already exist instead of skipping them")
 	dryRun := fs.Bool("dry-run", false, "validate only; change nothing")
 	if err := parse(fs, args); err != nil {
@@ -610,7 +642,11 @@ func importLinks(args []string) error {
 		return err
 	}
 	defer st.Close()
-	svc := app.New(st, app.Config{SelfHosts: splitList(*hosts)})
+	pub, err := parsePublic(*publicURL, ":443")
+	if err != nil {
+		return err
+	}
+	svc := app.New(st, app.Config{SelfHosts: selfHosts(splitList(*hosts), pub.host)})
 
 	var (
 		valid []store.Fields
