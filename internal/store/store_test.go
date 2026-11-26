@@ -67,7 +67,7 @@ func TestMaxLinks(t *testing.T) {
 		t.Fatalf("import over cap = %+v", r)
 	}
 	// Delete a, create b, then restoring or reverting a must not exceed the cap.
-	if err := s.Delete(ctx, a.ID, alice); err != nil {
+	if err := s.Delete(ctx, a.ID, a.Rev, alice); err != nil {
 		t.Fatal(err)
 	}
 	mustCreate(t, s, "b", "https://b.com")
@@ -126,13 +126,20 @@ func TestDeleteRestoreRevert(t *testing.T) {
 	s := openTest(t)
 	l := mustCreate(t, s, "docs", "https://v1.example.com")
 	l, _ = s.Update(ctx, l.ID, l.Rev, Fields{Name: "docs", Target: "https://v2.example.com"}, alice)
-	if err := s.Delete(ctx, l.ID, bob); err != nil {
+	// Deleting a revision that isn't the current one is a conflict.
+	if err := s.Delete(ctx, l.ID, l.Rev-1, bob); !errors.Is(err, ErrConflict) {
+		t.Fatalf("delete with a stale rev: err = %v, want ErrConflict", err)
+	}
+	if _, err := s.Get(ctx, "docs"); err != nil {
+		t.Fatalf("stale delete took effect: %v", err)
+	}
+	if err := s.Delete(ctx, l.ID, l.Rev, bob); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Get(ctx, "docs"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("deleted link still live: %v", err)
 	}
-	if err := s.Delete(ctx, l.ID, bob); !errors.Is(err, ErrNotFound) {
+	if err := s.Delete(ctx, l.ID, l.Rev+1, bob); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("double delete err = %v", err)
 	}
 	// A new link may take the name of a deleted one...
@@ -141,7 +148,7 @@ func TestDeleteRestoreRevert(t *testing.T) {
 	if _, err := s.Restore(ctx, l.ID, alice); !errors.Is(err, ErrExists) {
 		t.Fatalf("restore over live key err = %v", err)
 	}
-	if err := s.Delete(ctx, other.ID, alice); err != nil {
+	if err := s.Delete(ctx, other.ID, other.Rev, alice); err != nil {
 		t.Fatal(err)
 	}
 	r, err := s.Restore(ctx, l.ID, alice)

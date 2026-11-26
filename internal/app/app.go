@@ -132,9 +132,9 @@ func (s *Service) Update(ctx context.Context, id, rev int64, in Input, a store.A
 	return l, err
 }
 
-// Delete soft-deletes a link.
-func (s *Service) Delete(ctx context.Context, id int64, a store.Actor) error {
-	err := s.Store.Delete(ctx, id, a)
+// Delete soft-deletes a link; rev must be its current revision.
+func (s *Service) Delete(ctx context.Context, id, rev int64, a store.Actor) error {
+	err := s.Store.Delete(ctx, id, rev, a)
 	if err == nil {
 		s.log.Info("link deleted", "id", id, "actor", a.Display(), "ip", a.IP)
 		s.markChanged()

@@ -202,7 +202,13 @@ func (s *Server) apiDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.svc.Delete(r.Context(), l.ID, actorFrom(r)); err != nil {
+	// As for updates, the caller names the revision it means to delete.
+	rev, err := strconv.ParseInt(r.URL.Query().Get("rev"), 10, 64)
+	if err != nil || rev <= 0 {
+		writeJSON(w, http.StatusBadRequest, apiError{Error: "rev is required (DELETE …?rev=N; GET the link first)", Field: "rev"})
+		return
+	}
+	if err := s.svc.Delete(r.Context(), l.ID, rev, actorFrom(r)); err != nil {
 		s.apiFail(w, r, err)
 		return
 	}

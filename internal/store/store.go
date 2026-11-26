@@ -413,8 +413,9 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, cur Link, f Fields, a Act
 	return getByID(ctx, tx, cur.ID)
 }
 
-// Delete soft-deletes a live link.
-func (s *Store) Delete(ctx context.Context, id int64, a Actor) error {
+// Delete soft-deletes a live link. rev must match the link's current
+// revision, as for Update, so nobody deletes a version they haven't seen.
+func (s *Store) Delete(ctx context.Context, id, rev int64, a Actor) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -426,6 +427,9 @@ func (s *Store) Delete(ctx context.Context, id int64, a Actor) error {
 	}
 	if cur.Deleted() {
 		return ErrNotFound
+	}
+	if rev != cur.Rev {
+		return ErrConflict
 	}
 	now := s.now()
 	if _, err := tx.ExecContext(ctx,

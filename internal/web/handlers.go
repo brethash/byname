@@ -319,7 +319,11 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, http.StatusNotFound, "Not found", "No such link.")
 		return
 	}
-	if err := s.svc.Delete(r.Context(), id, actorFrom(r)); err != nil {
+	if !s.parseForm(w, r) {
+		return
+	}
+	rev, _ := strconv.ParseInt(r.PostFormValue("rev"), 10, 64)
+	if err := s.svc.Delete(r.Context(), id, rev, actorFrom(r)); err != nil {
 		s.fail(w, r, err)
 		return
 	}

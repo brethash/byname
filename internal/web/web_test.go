@@ -366,7 +366,14 @@ func TestFormCreateEditDeleteRestoreRevert(t *testing.T) {
 	expectStatus(t, w, http.StatusConflict)
 
 	// Delete, then the link 404s, then restore.
-	expectStatus(t, h.do("POST", "/_/links/"+id+"/delete", "", sameOrigin()), http.StatusSeeOther)
+	// The delete button carries the revision shown; an older one conflicts.
+	if !strings.Contains(h.do("GET", "/_/links/"+id, "").Body.String(), `name="rev" value="2"`) {
+		t.Fatal("delete form missing rev")
+	}
+	expectStatus(t, h.do("POST", "/_/links/"+id+"/delete", form("rev", "1"), formBody(), sameOrigin()), http.StatusConflict)
+	expectStatus(t, h.do("POST", "/_/links/"+id+"/delete", "", sameOrigin()), http.StatusConflict)
+	expectStatus(t, h.do("GET", "/docs", ""), http.StatusFound)
+	expectStatus(t, h.do("POST", "/_/links/"+id+"/delete", form("rev", "2"), formBody(), sameOrigin()), http.StatusSeeOther)
 	expectStatus(t, h.do("GET", "/docs", ""), http.StatusNotFound)
 	expectStatus(t, h.do("POST", "/_/links/"+id+"/restore", "", sameOrigin()), http.StatusSeeOther)
 	expectStatus(t, h.do("GET", "/docs", ""), http.StatusFound)
@@ -573,7 +580,11 @@ func TestAPI(t *testing.T) {
 		t.Fatalf("list = %+v", list)
 	}
 
-	expectStatus(t, h.do("DELETE", "/_/api/links/a", ""), http.StatusNoContent)
+	// Deletes name the revision, as updates do.
+	expectStatus(t, h.do("DELETE", "/_/api/links/a", ""), http.StatusBadRequest)
+	expectStatus(t, h.do("DELETE", "/_/api/links/a?rev=1", ""), http.StatusConflict)
+	expectStatus(t, h.do("GET", "/_/api/links/a", ""), http.StatusOK)
+	expectStatus(t, h.do("DELETE", "/_/api/links/a?rev=2", ""), http.StatusNoContent)
 	expectStatus(t, h.do("GET", "/_/api/links/a", ""), http.StatusNotFound)
 
 	// Cross-origin API write is blocked even with the right content type.

@@ -19,7 +19,7 @@
   {{else}}
     <a class="btn primary" href="/{{.Name}}">Open</a>
     <a class="btn" href="/_/links/{{.ID}}/edit">Edit</a>
-    <form method="post" action="/_/links/{{.ID}}/delete" data-confirm="Delete {{host}}/{{.Name}}? It can be restored later."><button class="btn danger" type="submit">Delete</button></form>
+    <form method="post" action="/_/links/{{.ID}}/delete" data-confirm="Delete {{host}}/{{.Name}}? It can be restored later."><input type="hidden" name="rev" value="{{.Rev}}"><button class="btn danger" type="submit">Delete</button></form>
   {{end}}
   </div>
 </section>
