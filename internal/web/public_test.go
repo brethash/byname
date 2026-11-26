@@ -465,6 +465,30 @@ func TestPublicSessionEndsWhenRemovedFromAllowList(t *testing.T) {
 	}
 }
 
+// Only a session that doesn't exist clears the cookie. A database error
+// keeps it and asks for a retry: the sign-in is probably fine.
+func TestPublicSessionLookupErrors(t *testing.T) {
+	h, g := newPublicHarness(t)
+	sess, _ := signIn(t, h, g, "203.0.113.9", "/")
+
+	stale := &http.Cookie{Name: sessionCookie, Value: auth.Token()}
+	w := h.pub("GET", "/_/links", "", funnel("203.0.113.9"), withCookie(stale))
+	expectStatus(t, w, http.StatusSeeOther)
+	if c := cookieNamed(w, sessionCookie); c == nil || c.MaxAge >= 0 {
+		t.Fatalf("unknown session's cookie not cleared: %+v", c)
+	}
+
+	h.svc.Store.Close() // every lookup now fails
+	w = h.pub("GET", "/_/links", "", funnel("203.0.113.9"), withCookie(sess))
+	expectStatus(t, w, http.StatusServiceUnavailable)
+	if c := cookieNamed(w, sessionCookie); c != nil {
+		t.Fatalf("cookie touched on a database error: %+v", c)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("no Retry-After")
+	}
+}
+
 func TestPublicWorkspaceDomain(t *testing.T) {
 	h, g := newPublicHarness(t, "example.com")
 	g.email = "carol@example.com" // a personal Google account using a work address: no hd

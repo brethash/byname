@@ -196,7 +196,15 @@ func (s *Server) publicGate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if sc := s.lookupSession(w, r); sc != nil {
+		sc, err := s.lookupSession(w, r)
+		if err != nil {
+			// The sign-in may well be fine: keep the cookie and ask for a
+			// retry rather than sending the person through sign-in again.
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "couldn't check your sign-in; try again in a moment", http.StatusServiceUnavailable)
+			return
+		}
+		if sc != nil {
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), sessionKey{}, sc)))
 			return
 		}
@@ -237,26 +245,29 @@ func openPath(p string) bool {
 	return strings.HasPrefix(p, "/_/static/") || strings.HasPrefix(p, "/_/auth/")
 }
 
-// lookupSession returns the live session for r's cookie, if any. A session
-// whose person is no longer allowed (removed from the allow list, or their
-// provider turned off) is deleted.
-func (s *Server) lookupSession(w http.ResponseWriter, r *http.Request) *session {
+// lookupSession returns the live session for r's cookie, or nil when there
+// is none; the cookie is cleared when its session doesn't exist (any more).
+// A session whose person is no longer allowed (removed from the allow list,
+// or their provider turned off) is deleted. An error means the session
+// couldn't be looked up; the cookie is left alone.
+func (s *Server) lookupSession(w http.ResponseWriter, r *http.Request) (*session, error) {
 	c, err := r.Cookie(sessionCookie)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	if len(c.Value) != 43 { // auth.Token's length
 		clearCookie(w, sessionCookie)
-		return nil
+		return nil, nil
 	}
 	sum := sha256.Sum256([]byte(c.Value))
 	x, err := s.svc.Store.SessionByHash(r.Context(), sum[:])
-	if err != nil {
-		if !errors.Is(err, store.ErrNoSession) {
-			s.log.Error("session lookup failed", "err", err)
-		}
+	if errors.Is(err, store.ErrNoSession) {
 		clearCookie(w, sessionCookie)
-		return nil
+		return nil, nil
+	}
+	if err != nil {
+		s.log.Error("session lookup failed", "err", err)
+		return nil, err
 	}
 	p := s.providerByID[x.Provider]
 	if p == nil || !p.Allowed(auth.Claims{Provider: x.Provider, Subject: x.Subject, Email: x.Email, Org: x.Org}) {
@@ -265,9 +276,9 @@ func (s *Server) lookupSession(w http.ResponseWriter, r *http.Request) *session 
 			s.log.Error("session delete failed", "err", err)
 		}
 		clearCookie(w, sessionCookie)
-		return nil
+		return nil, nil
 	}
-	return &session{Session: x, hash: sum[:]}
+	return &session{Session: x, hash: sum[:]}, nil
 }
 
 func setCookie(w http.ResponseWriter, name, value string, maxAge time.Duration) {
