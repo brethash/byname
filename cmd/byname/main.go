@@ -54,6 +54,7 @@ const (
 	defaultSnapshotDir = "/var/lib/byname/snapshots"
 	defaultThrottled   = "/sys/devices/platform/soc/soc:firmware/get_throttled"
 	tailnetNets        = "100.64.0.0/10,fd7a:115c:a1e0::/48"
+	defaultMaxLinks    = 10000
 )
 
 func main() {
@@ -162,7 +163,7 @@ func serve(args []string) error {
 	snapKeep := fs.Int("snapshot-keep", 14, "snapshots kept locally")
 	snapEvery := fs.Duration("snapshot-every", 24*time.Hour, "periodic snapshot interval")
 	clickFlush := fs.Duration("click-flush", 5*time.Minute, "how often batched click counts are written")
-	maxLinks := fs.Int("max-links", 10000, "maximum live links (0 = unlimited)")
+	maxLinks := fs.Int("max-links", defaultMaxLinks, "maximum live links (0 = unlimited)")
 	writesPerMin := fs.Float64("write-rate", 30, "changes allowed per device per minute")
 	writeBurst := fs.Int("write-burst", 10, "burst of changes allowed per device")
 	writeDaily := fs.Int("write-daily", 300, "changes allowed per device per 24 hours (0 = unlimited)")
@@ -647,13 +648,26 @@ func importLinks(args []string) error {
 	dbPath := fs.String("db", defaultDB, "SQLite database path")
 	hosts := fs.String("hosts", "", "the service's host names (rejects self-pointing links), as for serve")
 	publicURL := fs.String("public-url", "", "the service's public address, as for serve (rejects links pointing at it)")
+	maxLinks := fs.Int("max-links", defaultMaxLinks, "maximum live links (0 = unlimited), as for serve")
 	overwrite := fs.Bool("overwrite", false, "update links that already exist instead of skipping them")
-	dryRun := fs.Bool("dry-run", false, "validate only; change nothing")
+	dryRun := fs.Bool("dry-run", false, "report what the import would do; change nothing")
+	fs.Usage = func() {
+		fmt.Fprint(os.Stderr, `usage: byname import [flags] <file.json | ->
+
+Imports links from a byname export. Entries that aren't valid links are
+reported and left out. The rest are imported in one transaction: if any of
+them fails (the link cap, for example), nothing is imported. The exit status
+is 1 if any entry was invalid or failed.
+
+`)
+		fs.PrintDefaults()
+	}
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New(`usage: byname import [flags] <file.json | ->`)
+		fs.Usage()
+		return errUsage
 	}
 	var r io.Reader = os.Stdin
 	if p := fs.Arg(0); p != "-" {
@@ -671,17 +685,17 @@ func importLinks(args []string) error {
 	if ex.Format != web.ExportFormat {
 		return fmt.Errorf("not an byname export (format %q)", ex.Format)
 	}
+	pub, err := parsePublic(*publicURL, ":443")
+	if err != nil {
+		return err
+	}
 
 	st, err := store.Open(*dbPath)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
-	pub, err := parsePublic(*publicURL, ":443")
-	if err != nil {
-		return err
-	}
-	svc := app.New(st, app.Config{SelfHosts: selfHosts(splitList(*hosts), pub.host)})
+	svc := app.New(st, app.Config{SelfHosts: selfHosts(splitList(*hosts), pub.host), MaxLinks: *maxLinks})
 
 	var (
 		valid []store.Fields
@@ -690,24 +704,33 @@ func importLinks(args []string) error {
 	for _, l := range ex.Links {
 		f, err := svc.Validate(app.Input{Name: l.Name, Target: l.Target, Description: l.Description})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "skip %q: %v\n", l.Name, err)
+			fmt.Fprintf(os.Stderr, "invalid %q: %v\n", l.Name, err)
 			bad++
 			continue
 		}
 		valid = append(valid, f)
 	}
-	if *dryRun {
-		fmt.Printf("dry run: %d valid, %d invalid\n", len(valid), bad)
-		return nil
-	}
-	res, err := st.Import(context.Background(), valid, store.Actor{Login: "import", IP: "local"}, *overwrite)
+	res, err := st.Import(context.Background(), valid, store.Actor{Login: "import", IP: "local"},
+		store.ImportOptions{Overwrite: *overwrite, DryRun: *dryRun})
 	if err != nil {
 		return err
 	}
 	for _, e := range res.Errors {
-		fmt.Fprintln(os.Stderr, "error:", e)
+		fmt.Fprintln(os.Stderr, "failed:", e)
 	}
-	fmt.Printf("created %d, updated %d, skipped %d, invalid %d, failed %d\n",
+	summary := fmt.Sprintf("created %d, updated %d, skipped %d, invalid %d, failed %d",
 		res.Created, res.Updated, res.Skipped, bad, len(res.Errors))
+	switch {
+	case len(res.Errors) > 0:
+		fmt.Printf("nothing imported (%s)\n", summary)
+		return fmt.Errorf("%d link(s) failed; nothing was imported", len(res.Errors))
+	case *dryRun:
+		fmt.Printf("dry run, nothing changed: would have %s\n", summary)
+	default:
+		fmt.Println(summary)
+	}
+	if bad > 0 {
+		return fmt.Errorf("invalid entries left out: %d", bad)
+	}
 	return nil
 }

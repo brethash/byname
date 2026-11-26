@@ -310,6 +310,14 @@ func (s *Store) create(ctx context.Context, f Fields, a Actor, action string) (L
 		return Link{}, err
 	}
 	defer tx.Rollback()
+	l, err := s.createTx(ctx, tx, f, a, action)
+	if err != nil {
+		return Link{}, err
+	}
+	return l, tx.Commit()
+}
+
+func (s *Store) createTx(ctx context.Context, tx *sql.Tx, f Fields, a Actor, action string) (Link, error) {
 	if err := s.checkCap(ctx, tx); err != nil {
 		return Link{}, err
 	}
@@ -338,11 +346,7 @@ func (s *Store) create(ctx context.Context, f Fields, a Actor, action string) (L
 	if err := addEvent(ctx, tx, id, action, nil, &f, a, now); err != nil {
 		return Link{}, err
 	}
-	l, err := getByID(ctx, tx, id)
-	if err != nil {
-		return Link{}, err
-	}
-	return l, tx.Commit()
+	return getByID(ctx, tx, id)
 }
 
 // Update changes a live link's fields. rev must match the link's current
@@ -788,33 +792,63 @@ func CheckSnapshot(p string) error {
 // ImportResult summarises an import.
 type ImportResult struct {
 	Created, Updated, Skipped int
-	Errors                    []string
+	Errors                    []string // items that failed; nothing was imported
+	Committed                 bool     // the changes were saved
 }
 
-// Import creates links from f; an existing live link with the same key is
-// skipped, or updated when overwrite is set. Fields must already be valid.
-func (s *Store) Import(ctx context.Context, items []Fields, a Actor, overwrite bool) (ImportResult, error) {
+// ImportOptions controls Import.
+type ImportOptions struct {
+	Overwrite bool // update existing live links instead of skipping them
+	DryRun    bool // do everything, then roll it back
+}
+
+// Import creates links from items in one transaction; an existing live link
+// with the same key is skipped, or updated when Overwrite is set. Fields must
+// already be valid.
+//
+// It is all or nothing: when any item fails (the link cap, for example),
+// every item is still tried so that res.Errors lists all the failures, and
+// then nothing is saved. A dry run saves nothing either, but reports exactly
+// what the import would do. The returned error is for failures of the
+// database itself.
+func (s *Store) Import(ctx context.Context, items []Fields, a Actor, opt ImportOptions) (ImportResult, error) {
 	var res ImportResult
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return res, err
+	}
+	defer tx.Rollback()
 	for _, f := range items {
-		cur, err := s.Get(ctx, link.Key(f.Name))
+		cur, err := getByKey(ctx, tx, link.Key(f.Name))
 		switch {
 		case errors.Is(err, ErrNotFound):
-			if _, err := s.create(ctx, f, a, "import"); err != nil {
-				res.Errors = append(res.Errors, f.Name+": "+err.Error())
-				continue
+			_, err = s.createTx(ctx, tx, f, a, "import")
+			if err == nil {
+				res.Created++
 			}
-			res.Created++
 		case err != nil:
 			return res, err
-		case !overwrite || cur.Fields() == f:
+		case !opt.Overwrite || cur.Fields() == f:
 			res.Skipped++
 		default:
-			if _, err := s.Update(ctx, cur.ID, cur.Rev, f, a); err != nil {
-				res.Errors = append(res.Errors, f.Name+": "+err.Error())
-				continue
+			_, err = s.apply(ctx, tx, cur, f, a, "update", false)
+			if err == nil {
+				res.Updated++
 			}
-			res.Updated++
+		}
+		switch {
+		case errors.Is(err, ErrLimit), errors.Is(err, ErrExists):
+			res.Errors = append(res.Errors, f.Name+": "+err.Error())
+		case err != nil:
+			return res, err
 		}
 	}
+	if len(res.Errors) > 0 || opt.DryRun {
+		return res, nil // rolled back
+	}
+	if err := tx.Commit(); err != nil {
+		return res, err
+	}
+	res.Committed = true
 	return res, nil
 }

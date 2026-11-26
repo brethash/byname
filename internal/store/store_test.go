@@ -62,7 +62,7 @@ func TestMaxLinks(t *testing.T) {
 	if _, err := s.Create(ctx, Fields{Name: "b", Target: "https://b.com"}, alice); !errors.Is(err, ErrLimit) {
 		t.Fatalf("create over cap err = %v, want ErrLimit", err)
 	}
-	if r, _ := s.Import(ctx, []Fields{{Name: "c", Target: "https://c.com"}}, alice, false); r.Created != 0 || len(r.Errors) != 1 {
+	if r, _ := s.Import(ctx, []Fields{{Name: "c", Target: "https://c.com"}}, alice, ImportOptions{}); r.Created != 0 || len(r.Errors) != 1 || r.Committed {
 		t.Fatalf("import over cap = %+v", r)
 	}
 	// Delete a, create b, then restoring or reverting a must not exceed the cap.
@@ -341,13 +341,67 @@ func TestImport(t *testing.T) {
 		{Name: "exists", Target: "https://new.example.com"},
 		{Name: "fresh", Target: "https://fresh.example.com"},
 	}
-	r, err := s.Import(ctx, items, Actor{IP: "import"}, false)
-	if err != nil || r.Created != 1 || r.Skipped != 1 {
+	r, err := s.Import(ctx, items, Actor{IP: "import"}, ImportOptions{})
+	if err != nil || r.Created != 1 || r.Skipped != 1 || !r.Committed {
 		t.Fatalf("import = %+v, %v", r, err)
 	}
-	r, err = s.Import(ctx, items, Actor{IP: "import"}, true)
-	if err != nil || r.Updated != 1 || r.Skipped != 1 {
+	r, err = s.Import(ctx, items, Actor{IP: "import"}, ImportOptions{Overwrite: true})
+	if err != nil || r.Updated != 1 || r.Skipped != 1 || !r.Committed {
 		t.Fatalf("overwrite import = %+v, %v", r, err)
+	}
+	if l, _ := s.Get(ctx, "exists"); l.Target != "https://new.example.com" {
+		t.Fatalf("overwrite didn't apply: %+v", l)
+	}
+	// The same key twice in one file: the second sees the first.
+	r, err = s.Import(ctx, []Fields{{Name: "dup", Target: "https://a.example.com"}, {Name: "D-U-P", Target: "https://b.example.com"}},
+		Actor{IP: "import"}, ImportOptions{})
+	if err != nil || r.Created != 1 || r.Skipped != 1 {
+		t.Fatalf("duplicate import = %+v, %v", r, err)
+	}
+}
+
+func TestImportDryRun(t *testing.T) {
+	s := openTest(t)
+	r, err := s.Import(ctx, []Fields{{Name: "a", Target: "https://a.example.com"}}, Actor{IP: "import"}, ImportOptions{DryRun: true})
+	if err != nil || r.Created != 1 || r.Committed {
+		t.Fatalf("dry run = %+v, %v", r, err)
+	}
+	if n, _ := s.CountLive(ctx); n != 0 {
+		t.Fatalf("dry run created %d links", n)
+	}
+	if ev, _ := s.RecentEvents(ctx, 10); len(ev) != 0 {
+		t.Fatalf("dry run left %d history entries", len(ev))
+	}
+}
+
+// Import honours the link cap, and a failure anywhere imports nothing.
+func TestImportIsAllOrNothing(t *testing.T) {
+	s := openTest(t)
+	s.SetMaxLinks(3)
+	mustCreate(t, s, "one", "https://one.example.com")
+	items := []Fields{
+		{Name: "two", Target: "https://two.example.com"},
+		{Name: "three", Target: "https://three.example.com"},
+		{Name: "four", Target: "https://four.example.com"},
+		{Name: "five", Target: "https://five.example.com"},
+	}
+	r, err := s.Import(ctx, items, Actor{IP: "import"}, ImportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Committed || r.Created != 2 || len(r.Errors) != 2 || !strings.Contains(r.Errors[0], "four") {
+		t.Fatalf("import over the cap = %+v", r)
+	}
+	if n, _ := s.CountLive(ctx); n != 1 {
+		t.Fatalf("%d live links after a failed import, want 1", n)
+	}
+	if ev, _ := s.RecentEvents(ctx, 10); len(ev) != 1 {
+		t.Fatalf("%d history entries after a failed import, want 1", len(ev))
+	}
+	// Within the cap it goes through.
+	r, err = s.Import(ctx, items[:2], Actor{IP: "import"}, ImportOptions{})
+	if err != nil || !r.Committed || r.Created != 2 {
+		t.Fatalf("import within the cap = %+v, %v", r, err)
 	}
 }
 

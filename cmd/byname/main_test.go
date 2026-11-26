@@ -3,18 +3,22 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"byname/internal/app"
 	"byname/internal/link"
 	"byname/internal/store"
+	"byname/internal/web"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -186,4 +190,87 @@ func TestSessionsRevoke(t *testing.T) {
 	if n := live(); n != 0 {
 		t.Fatalf("%d sessions left after revoke --all", n)
 	}
+}
+
+func writeExport(t *testing.T, links ...web.ExportLink) string {
+	t.Helper()
+	b, err := json.Marshal(web.Export{Format: web.ExportFormat, Version: 1, Links: links})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "export.json")
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func liveLinks(t *testing.T, st *store.Store) int {
+	t.Helper()
+	n, err := st.CountLive(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestImportCommand(t *testing.T) {
+	good := []web.ExportLink{
+		{Name: "a", Target: "https://a.example.com"},
+		{Name: "b", Target: "https://b.example.com"},
+		{Name: "c", Target: "https://c.example.com"},
+	}
+	t.Run("all valid", func(t *testing.T) {
+		st, db := openStore(t)
+		if err := importLinks([]string{"--db", db, writeExport(t, good...)}); err != nil {
+			t.Fatal(err)
+		}
+		if n := liveLinks(t, st); n != 3 {
+			t.Fatalf("%d links, want 3", n)
+		}
+	})
+	t.Run("invalid entries exit non-zero", func(t *testing.T) {
+		st, db := openStore(t)
+		f := writeExport(t, append(good, web.ExportLink{Name: "bad name", Target: "https://x.example.com"},
+			web.ExportLink{Name: "loop", Target: "https://me.example.com/x"})...)
+		err := importLinks([]string{"--db", db, "--public-url", "https://me.example.com", f})
+		if err == nil || !strings.Contains(err.Error(), "invalid entries left out: 2") {
+			t.Fatalf("err = %v", err)
+		}
+		if n := liveLinks(t, st); n != 3 {
+			t.Fatalf("%d links, want the 3 valid ones", n)
+		}
+	})
+	t.Run("link cap", func(t *testing.T) {
+		st, db := openStore(t)
+		err := importLinks([]string{"--db", db, "--max-links", "2", writeExport(t, good...)})
+		if err == nil || !strings.Contains(err.Error(), "nothing was imported") {
+			t.Fatalf("err = %v", err)
+		}
+		if n := liveLinks(t, st); n != 0 {
+			t.Fatalf("%d links imported past the cap", n)
+		}
+	})
+	t.Run("link cap from the environment", func(t *testing.T) {
+		st, db := openStore(t)
+		t.Setenv("BYNAME_MAX_LINKS", "2")
+		if err := importLinks([]string{"--db", db, writeExport(t, good...)}); err == nil {
+			t.Fatal("BYNAME_MAX_LINKS ignored")
+		}
+		if n := liveLinks(t, st); n != 0 {
+			t.Fatalf("%d links imported past the cap", n)
+		}
+	})
+	t.Run("dry run", func(t *testing.T) {
+		st, db := openStore(t)
+		if err := importLinks([]string{"--db", db, "--dry-run", writeExport(t, good...)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := importLinks([]string{"--db", db, "--dry-run", "--max-links", "2", writeExport(t, good...)}); err == nil {
+			t.Fatal("dry run over the cap succeeded")
+		}
+		if n := liveLinks(t, st); n != 0 {
+			t.Fatalf("dry run imported %d links", n)
+		}
+	})
 }
