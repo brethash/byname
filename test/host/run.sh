@@ -314,26 +314,110 @@ check "rolled back" grep -q 'rolling back to v2' "$LOG"
 check "current -> v2" test "$(current)" == v2
 is_live v2
 
+# A release that migrates the schema and then fails: the rollback fails too
+# (the old binary refuses the newer schema), and the restore that install.sh
+# prints must bring the old release back. The restore can't use the binary.
+release v4-migrates 3 1 >/dev/null
+if deploy v4-migrates; then bad "a broken release deployed"; else ok "broken migrating release refused"; fi
+check "rollback reported unhealthy" grep -q 'rollback also unhealthy' "$LOG"
+check "database left at schema 3" test "$(sqlite3 "$DB" 'PRAGMA user_version;')" == 3
+# shellcheck disable=SC2016 # the literal text: the old hint had the admin's shell expand $(ls …)
+expect "$LOG" '-$(ls'
+HINT="$(grep -oE 'sudo byname-restore [^ ]+' "$LOG" | tail -n 1 | cut -d' ' -f3)"
+if [[ $HINT == "$SNAPS"/byname-*.db && -f $HINT ]]; then
+  ok "install.sh printed the exact pre-deploy snapshot: $HINT"
+  LOG="$OUT/restore-after-migration.log"
+  if PATH="$(stub_path)" byname-restore "$HINT" > "$LOG" 2>&1; then ok "printed restore command works"; else bad "printed restore command failed"; tail -n 8 "$LOG" | sed 's/^/         /'; fi
+  check "database back at schema 2" test "$(sqlite3 "$DB" 'PRAGMA user_version;')" == 2
+  is_live v2
+  KEPT="$(find "$SNAPS" -name 'pre-restore-*.db' | sort | tail -n 1)"
+  check "schema-3 database kept as $KEPT" test "$(sqlite3 "$KEPT" 'PRAGMA user_version;')" == 3
+else
+  bad "no usable 'sudo byname-restore <file>' in install.sh's output (got '$HINT')"
+fi
+
 # ---------------------------------------------------------------- restore.sh
 section "restore.sh"
 CASE=restore
 links_in() { sqlite3 "$1" "SELECT group_concat(name, ',') FROM (SELECT name FROM links WHERE deleted_at IS NULL ORDER BY name);"; }
+add_link() { sqlite3 "${2:-$DB}" "INSERT INTO links (name, key, target, created_by, created_at, updated_by, updated_at) VALUES ('$1', '$1', 'https://$1.example', 'test', 0, 'test', 0);"; }
+# restore ARGS...: byname-restore with the stubs; output in $LOG.
+restore() { PATH="$(stub_path)" byname-restore "$@" > "$LOG" 2>&1; }
 SNAP="$(find "$SNAPS" -name 'byname-*.db' | sort | tail -1)"
-sqlite3 "$DB" "INSERT INTO links (name, key, target, created_by, created_at, updated_by, updated_at) VALUES ('later', 'later', 'https://later.example', 'test', 0, 'test', 0);"
+add_link later
 LOG="$OUT/restore-snapshot.log"
-if PATH="$(stub_path)" byname-restore "$SNAP" > "$LOG" 2>&1; then ok "restore from a snapshot"; else bad "restore failed"; tail -n 8 "$LOG" | sed 's/^/         /'; fi
+if restore "$SNAP"; then ok "restore from a snapshot"; else bad "restore failed"; tail -n 8 "$LOG" | sed 's/^/         /'; fi
 check "restored links: wiki only" test "$(links_in "$DB")" == wiki
 is_live v2
 
+# Sign-in sessions in the snapshot don't come back.
+sqlite3 "$DB" "INSERT INTO sessions (token_hash, provider, subject, email, created_at, expires_at) VALUES
+  (x'01', 'google', 's1', 'a@family.example', 0, 9999999999999), (x'02', 'google', 's2', 'b@family.example', 0, 9999999999999);"
+SNAP="$(sudo -u byname "$LIB/current/byname" snapshot --db "$DB" --snapshot-dir "$SNAPS")"
+LOG="$OUT/restore-sessions.log"
+if restore "$SNAP"; then ok "restore a snapshot with sessions"; else bad "restore failed"; tail -n 8 "$LOG" | sed 's/^/         /'; fi
+check "sessions cleared" test "$(sqlite3 "$DB" 'SELECT count(*) FROM sessions;')" == 0
+check "and says so" grep -q 'cleared 2 sign-in session' "$LOG"
+
+# The pre-restore copy keeps what is only in the live database's -wal, and
+# restoring it (the undo) brings that back.
+python3 - "$DB" <<'PY2'
+import os, sqlite3, sys
+con = sqlite3.connect(sys.argv[1], isolation_level=None)
+con.execute("PRAGMA journal_mode = WAL")
+con.execute("PRAGMA wal_autocheckpoint = 0")
+con.execute("INSERT INTO links (name, key, target, created_by, created_at, updated_by, updated_at) "
+            "VALUES ('walonly', 'walonly', 'https://walonly.example', 'test', 0, 'test', 0)")
+os._exit(0)  # like a killed process: the change stays in byname.db-wal
+PY2
+check "test setup: a change only in the -wal" test -s "$DB-wal"
+LOG="$OUT/restore-latest.log"
+if restore --latest; then ok "restore --latest"; else bad "restore --latest failed"; tail -n 8 "$LOG" | sed 's/^/         /'; fi
+check "--latest took the newest byname-*.db" grep -qF "newest snapshot: $SNAPS/$(find "$SNAPS" -name 'byname-*.db' -printf '%f\n' | sort | tail -n 1)" "$LOG"
+KEPT="$(grep -oE "$SNAPS/pre-restore-[^ ]+\.db" "$LOG" | head -n 1)"
+check "kept the live database: $KEPT" test -f "$KEPT"
+check "with its -wal" test -s "$KEPT-wal"
+check "walonly gone after the restore" test "$(links_in "$DB")" == wiki
+LOG="$OUT/restore-undo.log"
+if restore "$KEPT"; then ok "undo by restoring the pre-restore copy"; else bad "undo failed"; tail -n 8 "$LOG" | sed 's/^/         /'; fi
+check "walonly is back" test "$(links_in "$DB")" == "walonly,wiki"
+is_live v2
+
+# A damaged live database: the restore still works and keeps the damaged copy.
+SNAP="$(find "$SNAPS" -name 'byname-*.db' | sort | tail -1)"
+head -c 8192 /dev/urandom > "$DB"
+LOG="$OUT/restore-corrupt-live.log"
+if restore "$SNAP"; then ok "restore over a corrupt database"; else bad "restore over a corrupt database failed"; tail -n 8 "$LOG" | sed 's/^/         /'; fi
+is_live v2
+KEPT="$(grep -oE "$SNAPS/pre-restore-[^ ]+\.db" "$LOG" | head -n 1)"
+check "corrupt copy kept" test -s "$KEPT"
+
+# A snapshot from before sign-in existed (schema 1, no sessions table).
+rm -f "$WORK/schema1.db"
+sqlite3 "$WORK/schema1.db" < "$SRC/internal/store/migrations/0001_init.sql"
+sqlite3 "$WORK/schema1.db" 'PRAGMA user_version = 1;'
+add_link old "$WORK/schema1.db"
+LOG="$OUT/restore-schema1.log"
+if restore "$WORK/schema1.db"; then ok "restore a schema-1 snapshot"; else bad "restore of a schema-1 snapshot failed"; tail -n 8 "$LOG" | sed 's/^/         /'; fi
+check "restored links: old" test "$(links_in "$DB")" == old
+is_live v2
+
+LOG="$OUT/restore-list.log"
+if restore --list; then ok "restore --list"; else bad "restore --list failed"; fi
+expect "$LOG" "+$SNAPS/byname-" "+$SNAPS/pre-restore-"
+check "refuses to run as another user" bash -c "! runuser -u admin -- /usr/local/sbin/byname-restore --list"
+
 gzip -c "$SNAP" > "$WORK/backup.db.gz"
 LOG="$OUT/restore-gz.log"
-if PATH="$(stub_path)" byname-restore "$WORK/backup.db.gz" > "$LOG" 2>&1; then ok "restore from a .gz backup"; else bad "restore from .gz failed"; tail -n 8 "$LOG" | sed 's/^/         /'; fi
+if restore "$WORK/backup.db.gz"; then ok "restore from a .gz backup"; else bad "restore from .gz failed"; tail -n 8 "$LOG" | sed 's/^/         /'; fi
 
 printf 'not a database' > "$WORK/junk.db"
 cp "$DB" "$WORK/live.before"
+: > "$STUB_STATE/systemctl.log"
 LOG="$OUT/restore-junk.log"
-if PATH="$(stub_path)" byname-restore "$WORK/junk.db" > "$LOG" 2>&1; then bad "restored a file that isn't a database"; else ok "refused a file that isn't a database"; fi
+if restore "$WORK/junk.db"; then bad "restored a file that isn't a database"; else ok "refused a file that isn't a database"; fi
 check "live database untouched" cmp -s "$DB" "$WORK/live.before"
+check "byname never stopped" bash -c "! grep -q 'stop byname' '$STUB_STATE/systemctl.log'"
 is_live v2
 
 # ---------------------------------------------------------------- summary

@@ -39,9 +39,11 @@ done
 [[ $units_changed -eq 1 ]] && systemctl daemon-reload && echo "    updated systemd units"
 
 PREV="$(readlink "$LIB/current" 2>/dev/null || true)"
+SNAP=""
 if [[ -n "$PREV" && -f "$DB" ]]; then
   echo "==> pre-deploy snapshot (with $PREV)"
-  sudo -u byname "$LIB/$PREV/byname" snapshot --db "$DB" --snapshot-dir "$SNAPS"
+  SNAP="$(sudo -u byname "$LIB/$PREV/byname" snapshot --db "$DB" --snapshot-dir "$SNAPS" | tail -n 1)"
+  echo "    $SNAP"
 fi
 
 HOST="$(sed -n 's/^BYNAME_HOSTS=\([^,]*\).*/\1/p' /etc/byname/byname.env)"
@@ -79,8 +81,11 @@ else
     if healthy "$PREV"; then
       echo "==> rolled back; $PREV is live" >&2
     else
-      echo "!! rollback also unhealthy. If $VERSION migrated the schema, restore the" >&2
-      echo "   pre-deploy snapshot: sudo byname-restore \$(ls -1 $SNAPS/byname-*.db | tail -1)" >&2
+      echo "!! rollback also unhealthy." >&2
+      if [[ -n "$SNAP" ]]; then
+        echo "   If $VERSION migrated the database, $PREV refuses it. Restore the snapshot" >&2
+        echo "   taken just before this deploy:  sudo byname-restore $SNAP" >&2
+      fi
     fi
   fi
   exit 1

@@ -221,15 +221,23 @@ matches the host, then on the host:
 
 1. verifies the binary's sha256;
 2. snapshots the database **with the current binary** (before any migration);
-3. switches the `current` symlink atomically and restarts `me`;
+3. switches the `current` symlink atomically and restarts `byname`;
 4. polls `/_/healthz` for the new version for 20 s; on failure it switches
    back and restarts the previous version.
 
 It refuses a dirty working tree unless you set `FORCE=1`.
 
 If a release that changed the database schema has to be rolled back, the old
-binary refuses the newer schema on purpose. Restore the pre-deploy snapshot
-that step 2 wrote: `sudo byname-restore $(ls -1 /var/lib/byname/snapshots/byname-*.db | tail -1)`.
+binary refuses the newer schema on purpose, so the automatic rollback fails
+too. Restore the snapshot that step 2 wrote. The deploy prints its path and,
+when the rollback fails, the whole `sudo byname-restore …` command to run.
+Right after the failed deploy it is also the newest snapshot:
+
+```sh
+sudo byname-restore --latest        # or: sudo byname-restore --list, then pick one
+```
+
+Changes made since that snapshot are lost.
 
 ## Backups (S3)
 
@@ -278,9 +286,14 @@ sudo systemctl start byname-backup.service && journalctl -u byname-backup -n 5
 From a local snapshot (on the host):
 
 ```sh
-ls /var/lib/byname/snapshots/
+sudo byname-restore --list          # oldest first, with times and sizes
 sudo byname-restore /var/lib/byname/snapshots/byname-20261124T120000.000Z.db
+sudo byname-restore --latest        # the newest snapshot
 ```
+
+The snapshot directory is readable only by `byname`, so list it with
+`--list` (or `sudo ls`): a plain `ls`, or a `$(ls …)` inside a `sudo` command,
+runs as you and can't see it.
 
 From S3 (the host's key cannot read, so fetch from your Mac):
 
@@ -291,8 +304,18 @@ scp byname-20261124T120000.000Z.db.gz <you>@me:
 ssh <you>@me sudo byname-restore byname-20261124T120000.000Z.db.gz
 ```
 
-`byname-restore` integrity-checks the file, snapshots the current database first
-(so the restore itself can be undone), swaps the file and restarts `me`.
+`byname-restore` integrity-checks the file, stops `byname`, keeps the current
+database (with its `-wal` and `-shm` files) as
+`snapshots/pre-restore-<UTC time>.db`, installs the snapshot and starts
+`byname` again. Undo a restore by restoring that copy:
+`sudo byname-restore /var/lib/byname/snapshots/pre-restore-<UTC time>.db`.
+Keeping the copy doesn't need the byname binary, so a restore works even when
+the current database is damaged or newer than the binary. `pre-restore-*`
+copies are never pruned or uploaded; delete old ones yourself.
+
+A restore clears the sign-in sessions in the restored copy, so everyone using
+the public address signs in again. Otherwise sessions revoked after the
+snapshot was taken (`byname sessions revoke`) would come back.
 
 ### Restore drill (do this once in M3, then yearly)
 
