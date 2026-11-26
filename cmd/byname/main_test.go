@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"log/slog"
@@ -135,5 +136,54 @@ func TestShutdownFlushesClicksServedDuringShutdown(t *testing.T) {
 	}
 	if got.Clicks != 1 {
 		t.Fatalf("clicks = %d, want 1: the click served during shutdown was lost", got.Clicks)
+	}
+}
+
+func TestSessionsRevoke(t *testing.T) {
+	st, db := openStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	add := func(token, email string) {
+		t.Helper()
+		sum := sha256.Sum256([]byte(token))
+		if err := st.CreateSession(ctx, sum[:], store.Session{Provider: "google", Subject: token, Email: email,
+			Created: now, Expires: now.Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	live := func() int {
+		t.Helper()
+		list, err := st.Sessions(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(list)
+	}
+	add("a", "alice@gmail.com")
+	add("b", "bob@gmail.com")
+
+	// An empty argument never means "everyone".
+	for _, empty := range []string{"", " "} {
+		if err := sessions([]string{"--db", db, "revoke", empty}); err == nil {
+			t.Errorf("revoke %q succeeded", empty)
+		}
+	}
+	if err := sessions([]string{"--db", db, "revoke"}); !errors.Is(err, errUsage) {
+		t.Errorf("revoke without an argument: err = %v, want usage", err)
+	}
+	if n := live(); n != 2 {
+		t.Fatalf("%d sessions left, want 2", n)
+	}
+	if err := sessions([]string{"--db", db, "revoke", "Alice@Gmail.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := live(); n != 1 {
+		t.Fatalf("%d sessions left after revoking alice, want 1", n)
+	}
+	if err := sessions([]string{"--db", db, "revoke", "--all"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := live(); n != 0 {
+		t.Fatalf("%d sessions left after revoke --all", n)
 	}
 }

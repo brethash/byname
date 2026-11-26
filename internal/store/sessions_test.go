@@ -69,8 +69,16 @@ func TestSessions(t *testing.T) {
 	if n, err := s.RevokeSessions(ctx, "alice@gmail.com"); err != nil || n != 1 {
 		t.Fatalf("RevokeSessions(alice) = %d, %v", n, err)
 	}
-	if n, err := s.RevokeSessions(ctx, ""); err != nil || n != 1 {
-		t.Fatalf("RevokeSessions(all) = %d, %v", n, err)
+	for _, empty := range []string{"", "  "} {
+		if n, err := s.RevokeSessions(ctx, empty); !errors.Is(err, ErrNoEmail) || n != 0 {
+			t.Fatalf("RevokeSessions(%q) = %d, %v; want ErrNoEmail", empty, n, err)
+		}
+	}
+	if _, err := s.SessionByHash(ctx, hashOf("b")); err != nil {
+		t.Fatalf("an empty email revoked bob's session: %v", err)
+	}
+	if n, err := s.RevokeAllSessions(ctx); err != nil || n != 1 {
+		t.Fatalf("RevokeAllSessions = %d, %v", n, err)
 	}
 
 	// One account keeps at most maxSessionsPerAccount sessions; the oldest go.

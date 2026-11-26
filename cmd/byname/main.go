@@ -76,6 +76,9 @@ func main() {
 		os.Exit(2)
 	}
 	if err := cmd(os.Args[2:]); err != nil {
+		if errors.Is(err, errUsage) {
+			os.Exit(2)
+		}
 		fmt.Fprintf(os.Stderr, "byname %s: %v\n", os.Args[1], err)
 		os.Exit(1)
 	}
@@ -532,11 +535,14 @@ func sessions(args []string) error {
 		}
 		return nil
 	case len(rest) == 2 && rest[0] == "revoke":
-		email := strings.ToLower(rest[1])
+		var n int64
 		if rest[1] == "--all" {
-			email = ""
+			n, err = st.RevokeAllSessions(ctx)
+		} else if email := strings.ToLower(strings.TrimSpace(rest[1])); email == "" {
+			return errors.New(`revoke needs an email address, or --all to sign everyone out`)
+		} else {
+			n, err = st.RevokeSessions(ctx, email)
 		}
-		n, err := st.RevokeSessions(ctx, email)
 		if err != nil {
 			return err
 		}
@@ -544,9 +550,12 @@ func sessions(args []string) error {
 		return nil
 	}
 	fs.Usage()
-	os.Exit(2)
-	return nil
+	return errUsage
 }
+
+// errUsage tells main that a command has printed its usage: exit 2, with no
+// further message.
+var errUsage = errors.New("usage")
 
 func snapshot(args []string) error {
 	fs := newFlags("snapshot")
