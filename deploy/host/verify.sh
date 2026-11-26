@@ -99,7 +99,20 @@ if [[ "$TAILSCALE" == 0 ]]; then
   pass "not used (bootstrap.sh --no-tailscale)"
   grep -q '^BYNAME_NO_WHOIS=true' /etc/byname/byname.env && pass "WhoIs off" || fail "BYNAME_NO_WHOIS isn't true without Tailscale (re-run bootstrap.sh)"
   if systemctl is-active --quiet tailscaled 2>/dev/null; then
-    fail "tailscaled is running without Tailscale configured: Tailscale SSH bypasses the firewall (sudo tailscale down; sudo systemctl disable --now tailscaled)"
+    fail "tailscaled is running without Tailscale configured: Tailscale SSH bypasses the firewall (sudo tailscale down; sudo systemctl mask --now tailscaled)"
+  fi
+  if command -v tailscaled >/dev/null 2>&1; then
+    if [[ "$(systemctl is-enabled tailscaled.service 2>/dev/null)" == masked ]]; then
+      pass "tailscaled masked (nothing can start it)"
+    else
+      fail "tailscaled is installed but not masked, so something could start it (sudo systemctl mask --now tailscaled, or re-run bootstrap.sh)"
+    fi
+  fi
+  wants="$(systemctl show byname.service -p Wants --value 2>/dev/null)"
+  if [[ " $wants " == *" tailscaled.service "* ]]; then
+    fail "byname.service wants tailscaled.service, which starts it on every restart (re-run bootstrap.sh)"
+  else
+    pass "byname.service doesn't pull in tailscaled"
   fi
   if grep -qE '100\.64\.0\.0/10|fd7a:115c' <<<"$ALLOW_CIDRS"; then
     fail "BYNAME_ALLOW_CIDRS still trusts tailnet ranges without Tailscale (re-run bootstrap.sh)"
@@ -107,6 +120,9 @@ if [[ "$TAILSCALE" == 0 ]]; then
     pass "tailnet ranges not trusted"
   fi
 else
+after="$(systemctl show byname.service -p After --value 2>/dev/null)"
+[[ " $after " == *" tailscaled.service "* ]] && pass "byname.service starts after tailscaled" ||
+  warn "byname.service isn't ordered after tailscaled (re-run bootstrap.sh to add byname.service.d/05-tailscale.conf)"
 ts_json="$(tailscale status --json 2>/dev/null || echo '{}')"
 ts_check="$(python3 -c '
 import json, sys

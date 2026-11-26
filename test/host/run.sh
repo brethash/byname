@@ -113,6 +113,13 @@ after_run() {
   check "byname.service installed" test -f /etc/systemd/system/byname.service
   check "byname-firewall.service enabled" called '^systemctl enable byname-firewall.service'
   check "byname-verify and byname-restore installed" test -x /usr/local/sbin/byname-verify -a -x /usr/local/sbin/byname-restore
+  # byname.service itself never pulls in tailscaled; the drop-in does, with Tailscale.
+  expect /etc/systemd/system/byname.service '!^(Wants|After)=.*tailscaled'
+  if grep -qx 'TAILSCALE=1' /etc/byname/host.conf; then
+    expect /etc/systemd/system/byname.service.d/05-tailscale.conf '+Wants=tailscaled.service' '+After=tailscaled.service'
+  else
+    check "no tailscaled drop-in" test ! -e /etc/systemd/system/byname.service.d/05-tailscale.conf
+  fi
 }
 
 ARCH=aarch64
@@ -227,8 +234,11 @@ if run_bootstrap cloud-tailscale-domain-ssh-any ok "${T[@]}" --platform cloud --
 fi
 reset_host
 
+# A server built without a Tailscale auth key has no Tailscale installed.
+TAILSCALE_INSTALLED=0
 if run_bootstrap cloud-no-tailscale ok "${T[@]}" --platform cloud --no-tailscale --ssh-from 203.0.113.7/32; then
   after_run
+  check "nothing to mask" bash -c "! grep -q 'mask tailscaled' '$STUB_STATE/systemctl.log'"
   check "warns there's no public address yet" grep -q 'no --public-domain yet' "$LOG"
   env_is BYNAME_NO_WHOIS true
   env_is BYNAME_ALLOW_CIDRS "127.0.0.1/32,::1/128"
@@ -237,9 +247,35 @@ fi
 reset_host
 
 signin
+TAILSCALE_INSTALLED=0
 if run_bootstrap cloud-no-tailscale-domain ok "${T[@]}" --platform cloud --no-tailscale --ssh-from any --public-domain me.example.com; then
   after_run
   check_firewall "${FW_NO_TS[@]}" "${FW_PUBLIC[@]}" "~$SSH_ANY"
+fi
+reset_host
+
+# ---------------------------------------------------------------- tailscale off/on
+section "bootstrap.sh: Tailscale off, and on again"
+if run_bootstrap ts-on ok "${T[@]}" --platform cloud; then
+  check "tailscaled running" test -e "$STUB_STATE/units/tailscaled.service.active"
+  # Turning it off while tailscaled runs is refused; do what the message says.
+  if run_bootstrap ts-off-while-running 'sudo systemctl mask --now tailscaled' "${T[@]}" --platform cloud --no-tailscale --ssh-from 203.0.113.7/32; then
+    PATH="$(stub_path)" systemctl mask --now tailscaled >/dev/null 2>&1
+  fi
+  if run_bootstrap ts-off ok "${T[@]}" --platform cloud --no-tailscale --ssh-from 203.0.113.7/32; then
+    after_run
+    check "tailscaled masked" test -e "$STUB_STATE/units/tailscaled.service.masked"
+    check "tailscaled not running" test ! -e "$STUB_STATE/units/tailscaled.service.active"
+    check "byname.service doesn't want tailscaled" \
+      bash -c "! PATH='$(stub_path)' systemctl show byname.service -p Wants --value | grep -qw tailscaled.service"
+  fi
+  if run_bootstrap ts-on-again ok "${T[@]}" --platform cloud; then
+    after_run
+    check "tailscaled unmasked" test ! -e "$STUB_STATE/units/tailscaled.service.masked"
+    check "tailscaled running again" test -e "$STUB_STATE/units/tailscaled.service.active"
+    check "byname.service wants tailscaled" \
+      bash -c "PATH='$(stub_path)' systemctl show byname.service -p Wants --value | grep -qw tailscaled.service"
+  fi
 fi
 reset_host
 

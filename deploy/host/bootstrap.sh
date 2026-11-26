@@ -176,7 +176,7 @@ if [[ $TAILSCALE -eq 0 ]] && systemctl is-active --quiet tailscaled 2>/dev/null;
   # Tailscale SSH is answered by tailscaled itself, past the host firewall,
   # so leaving it running would leave tailnet SSH open. Stopping it here could
   # cut off the session running this script.
-  die "--no-tailscale, but tailscaled is running (Tailscale SSH bypasses the firewall). From an OpenSSH session, run: sudo tailscale down; sudo systemctl disable --now tailscaled. Then re-run"
+  die "--no-tailscale, but tailscaled is running (Tailscale SSH bypasses the firewall). From an OpenSSH session, run: sudo tailscale down; sudo systemctl mask --now tailscaled. Then re-run"
 fi
 if [[ $TAILSCALE -eq 0 && "$PLATFORM" == pi && $LAN_ACCESS -eq 0 && -z "$PUBLIC_DOMAIN" ]]; then
   die "without Tailscale, a Pi needs --lan-access or --public-domain: otherwise nobody can use the service"
@@ -270,7 +270,15 @@ ok "installed unattended-upgrades, nftables, sqlite3, curl"
 # ---------------------------------------------------------------- tailscale
 step "Tailscale"
 if [[ $TAILSCALE -eq 0 ]]; then
-  ok "not used (--no-tailscale)"
+  if command -v tailscaled >/dev/null 2>&1; then
+    # Masked, not only disabled: anything that wants it could start a disabled
+    # tailscaled, and Tailscale SSH would bypass the firewall.
+    systemctl mask tailscaled.service >/dev/null 2>&1 ||
+      die "could not mask tailscaled.service; without Tailscale nothing may start it"
+    ok "not used (--no-tailscale); tailscaled is masked, so nothing starts it"
+  else
+    ok "not used (--no-tailscale)"
+  fi
 elif ! command -v tailscale >/dev/null 2>&1; then
   repo="https://pkgs.tailscale.com/stable/${OS_ID}/${OS_CODENAME}"
   curl -fsSL "$repo.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg
@@ -282,6 +290,7 @@ else
   ok "tailscale $(tailscale version | head -1) present"
 fi
 if [[ $TAILSCALE -eq 1 ]]; then
+  systemctl unmask tailscaled.service >/dev/null 2>&1 || true # masked by a --no-tailscale run
   systemctl enable --now tailscaled >/dev/null 2>&1
 fi
 
@@ -472,9 +481,17 @@ ok "wrote /etc/byname/byname.env (BYNAME_HOSTS=$HOSTS)"
 ok "allowed peers: $ALLOW"
 [[ -n "$PUBLIC_URL" ]] && ok "public address $PUBLIC_URL, sign-in with:$SIGNIN"
 [[ $TAILSCALE -eq 0 || -n "$TS_SUFFIX" ]] || warn "tailnet not joined yet; re-run this script after 'tailscale up' to add the full tailnet name to BYNAME_HOSTS"
+install -d -m 0755 /etc/systemd/system/byname.service.d
+# Only with Tailscale does byname.service want tailscaled (WhoIs, Funnel):
+# Wants= starts even a disabled unit.
+if [[ $TAILSCALE -eq 1 ]]; then
+  printf '# Managed by byname bootstrap.sh (with Tailscale)\n[Unit]\nWants=tailscaled.service\nAfter=tailscaled.service\n' \
+    > /etc/systemd/system/byname.service.d/05-tailscale.conf
+else
+  rm -f /etc/systemd/system/byname.service.d/05-tailscale.conf
+fi
 # systemd's IP filter for byname.service only allows the tailnet and localhost;
 # LAN access adds the LAN subnet in a drop-in.
-install -d -m 0755 /etc/systemd/system/byname.service.d
 if [[ $LAN_ACCESS -eq 1 ]]; then
   printf '# Managed by byname bootstrap.sh --lan-access\n[Service]\nIPAddressAllow=%s\n' "$LAN_SUBNET" \
     > /etc/systemd/system/byname.service.d/10-lan-access.conf
