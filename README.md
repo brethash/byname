@@ -1,11 +1,11 @@
 # byname
 
-Short links by name, for a household or a small team. Type `me/wiki` in any
-browser and land on your wiki. Type `me/gh/octocat` and land on
-`https://github.com/octocat`. Everyone shares one list that anyone allowed in
-can add to, and every change is recorded and can be undone.
+Tired of forgetting that link to your critical google doc, confluence page, favorite Homestar video? If you can remember words, you can use Byname. 
 
-byname is self-hosted: one small Go program with a SQLite database, running on
+byname is meant to scale from a simple household organization tool to serving full teams and projects. Simply type `me/wiki` in any
+browser and land on your wiki.
+
+Hosting is simple and flexible: one small Go program with a SQLite database, running on
 a Raspberry Pi at home or a $5/month cloud server.
 
 ## Who can use it
