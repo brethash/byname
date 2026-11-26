@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -110,16 +111,26 @@ func (s *Store) Sessions(ctx context.Context) ([]Session, error) {
 	return out, rows.Err()
 }
 
-// RevokeSessions deletes every session for email, or every session at all
-// when email is "". It returns how many it deleted, expired ones included.
+// ErrNoEmail means RevokeSessions was given no email address. Signing
+// everyone out is RevokeAllSessions, never an empty argument.
+var ErrNoEmail = errors.New("an email address is required")
+
+// RevokeSessions deletes every session for email. It returns how many it
+// deleted, expired ones included.
 func (s *Store) RevokeSessions(ctx context.Context, email string) (int64, error) {
-	var res sql.Result
-	var err error
-	if email == "" {
-		res, err = s.db.ExecContext(ctx, `DELETE FROM sessions`)
-	} else {
-		res, err = s.db.ExecContext(ctx, `DELETE FROM sessions WHERE email = ?`, email)
+	if strings.TrimSpace(email) == "" {
+		return 0, ErrNoEmail
 	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE email = ?`, email)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// RevokeAllSessions deletes every session, signing everyone out.
+func (s *Store) RevokeAllSessions(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions`)
 	if err != nil {
 		return 0, err
 	}

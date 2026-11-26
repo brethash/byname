@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -47,6 +48,25 @@ func TestCreateValidates(t *testing.T) {
 	if err != nil || l.Name != "Docs" || l.Target != "https://docs.example.com" || l.Description != "hi" {
 		t.Fatalf("create = %+v, %v", l, err)
 	}
+	for _, d := range []string{"bad \xff", "bell\a"} {
+		_, err = s.Create(ctx, Input{Name: "d", Target: "https://d.example.com", Description: d}, who)
+		if !errors.As(err, &fe) || fe.Field != "description" {
+			t.Fatalf("description %q: err = %v", d, err)
+		}
+	}
+	_, err = s.Create(ctx, Input{Name: "\u212Aelvin", Target: "https://k.example.com"}, who)
+	if !errors.As(err, &fe) || fe.Field != "name" {
+		t.Fatalf("look-alike name: err = %v", err)
+	}
+	// What is stored is exactly what the audit log records.
+	l, err = s.Create(ctx, Input{Name: "multi", Target: "https://m.example.com", Description: "two\nlines"}, who)
+	if err != nil || l.Description != "two lines" {
+		t.Fatalf("create = %+v, %v", l, err)
+	}
+	hist, err := s.Store.History(ctx, l.ID, 0, 0)
+	if err != nil || len(hist) != 1 || *hist[0].After != l.Fields() {
+		t.Fatalf("history = %+v, %v; link %+v", hist, err, l.Fields())
+	}
 }
 
 func TestClickBatching(t *testing.T) {
@@ -82,6 +102,60 @@ func TestSnapshotsAndPrune(t *testing.T) {
 	names, err := ListSnapshots(dir)
 	if err != nil || len(names) != 2 {
 		t.Fatalf("snapshots = %v, %v", names, err)
+	}
+}
+
+// A snapshot left empty or partial by an older version (which wrote in
+// place) must not stand in for a real one: startup takes a fresh snapshot.
+func TestStartupReplacesPartialSnapshot(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "snaps")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	partial := SnapshotName(time.Now().Add(-time.Hour))
+	if err := os.WriteFile(filepath.Join(dir, partial), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	s := newTest(t, Config{SnapshotDir: dir, ClickFlush: time.Hour})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	waitFor(t, func() bool { n, _ := ListSnapshots(dir); return len(n) == 2 })
+	cancel()
+	<-done
+	names, _ := ListSnapshots(dir)
+	if err := store.CheckSnapshot(filepath.Join(dir, names[1])); err != nil {
+		t.Fatalf("new snapshot %s: %v", names[1], err)
+	}
+}
+
+func TestPruneRemovesStaleTemporaryFiles(t *testing.T) {
+	dir := t.TempDir()
+	stale := "." + SnapshotName(time.Now().Add(-2*time.Hour)) + ".tmp"
+	fresh := "." + SnapshotName(time.Now()) + ".tmp"
+	for _, n := range []string{stale, fresh, ".unrelated.tmp"} {
+		p := filepath.Join(dir, n)
+		if err := os.WriteFile(p, []byte("partial"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-2 * time.Hour)
+		if n != fresh {
+			os.Chtimes(p, old, old)
+		}
+	}
+	if names, _ := ListSnapshots(dir); len(names) != 0 {
+		t.Fatalf("temporary files listed as snapshots: %v", names)
+	}
+	if err := PruneSnapshots(dir, 14); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, stale)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stale temporary file kept: %v", err)
+	}
+	for _, n := range []string{fresh, ".unrelated.tmp"} {
+		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
+			t.Errorf("%s removed: %v", n, err)
+		}
 	}
 }
 

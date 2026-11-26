@@ -9,13 +9,17 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"byname/internal/link"
@@ -306,6 +310,14 @@ func (s *Store) create(ctx context.Context, f Fields, a Actor, action string) (L
 		return Link{}, err
 	}
 	defer tx.Rollback()
+	l, err := s.createTx(ctx, tx, f, a, action)
+	if err != nil {
+		return Link{}, err
+	}
+	return l, tx.Commit()
+}
+
+func (s *Store) createTx(ctx context.Context, tx *sql.Tx, f Fields, a Actor, action string) (Link, error) {
 	if err := s.checkCap(ctx, tx); err != nil {
 		return Link{}, err
 	}
@@ -334,11 +346,7 @@ func (s *Store) create(ctx context.Context, f Fields, a Actor, action string) (L
 	if err := addEvent(ctx, tx, id, action, nil, &f, a, now); err != nil {
 		return Link{}, err
 	}
-	l, err := getByID(ctx, tx, id)
-	if err != nil {
-		return Link{}, err
-	}
-	return l, tx.Commit()
+	return getByID(ctx, tx, id)
 }
 
 // Update changes a live link's fields. rev must match the link's current
@@ -405,8 +413,9 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, cur Link, f Fields, a Act
 	return getByID(ctx, tx, cur.ID)
 }
 
-// Delete soft-deletes a live link.
-func (s *Store) Delete(ctx context.Context, id int64, a Actor) error {
+// Delete soft-deletes a live link. rev must match the link's current
+// revision, as for Update, so nobody deletes a version they haven't seen.
+func (s *Store) Delete(ctx context.Context, id, rev int64, a Actor) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -418,6 +427,9 @@ func (s *Store) Delete(ctx context.Context, id int64, a Actor) error {
 	}
 	if cur.Deleted() {
 		return ErrNotFound
+	}
+	if rev != cur.Rev {
+		return ErrConflict
 	}
 	now := s.now()
 	if _, err := tx.ExecContext(ctx,
@@ -487,6 +499,7 @@ type ListOptions struct {
 	Query   string // substring match on name, target, description
 	Sort    string // "name" (default), "recent", "popular", "created"
 	Limit   int    // 0 = no limit
+	Offset  int    // skip this many first (with Limit, for paging)
 	Deleted bool   // list deleted links instead of live ones
 }
 
@@ -521,6 +534,9 @@ func (s *Store) List(ctx context.Context, opts ListOptions) ([]Link, error) {
 	q := `SELECT ` + linkCols + ` FROM links WHERE ` + strings.Join(where, " AND ") + ` ORDER BY ` + order
 	if opts.Limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", opts.Limit)
+		if opts.Offset > 0 {
+			q += fmt.Sprintf(" OFFSET %d", opts.Offset)
+		}
 	}
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -621,9 +637,21 @@ func (s *Store) events(ctx context.Context, where string, limit int, args ...any
 	return out, rows.Err()
 }
 
-// History returns a link's audit entries, newest first.
-func (s *Store) History(ctx context.Context, linkID int64) ([]Event, error) {
-	return s.events(ctx, `WHERE e.link_id = ?`, 0, linkID)
+// MaxHistory is the most audit entries History returns at once.
+const MaxHistory = 500
+
+// History returns up to limit of a link's audit entries, newest first: the
+// newest ones when before is 0, otherwise those older than the entry with id
+// before (the last one of the previous page). limit is capped at MaxHistory,
+// and 0 means MaxHistory, so a link with a long history never loads it all.
+func (s *Store) History(ctx context.Context, linkID, before int64, limit int) ([]Event, error) {
+	if limit <= 0 || limit > MaxHistory {
+		limit = MaxHistory
+	}
+	if before > 0 {
+		return s.events(ctx, `WHERE e.link_id = ? AND e.id < ?`, limit, linkID, before)
+	}
+	return s.events(ctx, `WHERE e.link_id = ?`, limit, linkID)
 }
 
 // RecentEvents returns the newest audit entries across all links.
@@ -653,44 +681,194 @@ func (s *Store) AddClicks(ctx context.Context, counts map[int64]int64, at time.T
 
 // Snapshot writes a consistent copy of the database to dest, which must not
 // exist. It does not block readers and takes milliseconds at household scale.
-func (s *Store) Snapshot(ctx context.Context, dest string) error {
+//
+// The copy is written under a hidden temporary name next to dest (see
+// SnapshotTempName), flushed to disk, and only then renamed to dest, so dest
+// is either absent or complete: an interrupted snapshot (a restart, a full
+// disk, a power cut) never leaves an empty or partial file under a name that
+// listings, backups and restores would take for a good one.
+func (s *Store) Snapshot(ctx context.Context, dest string) (err error) {
 	if _, err := os.Stat(dest); err == nil {
 		return fmt.Errorf("snapshot %s already exists", dest)
 	}
-	_, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, dest)
+	tmp := SnapshotTempName(dest)
+	// A leftover from a crash would make VACUUM INTO fail.
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			os.Remove(tmp)
+		}
+	}()
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, tmp); err != nil {
+		return err
+	}
+	if err := syncFile(tmp); err != nil {
+		return fmt.Errorf("sync snapshot: %w", err)
+	}
+	if beforeSnapshotRename != nil {
+		if err := beforeSnapshotRename(tmp); err != nil {
+			return err
+		}
+	}
+	if err := CheckSnapshot(tmp); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		return err
+	}
+	if err := syncDir(filepath.Dir(dest)); err != nil {
+		return fmt.Errorf("sync snapshot directory: %w", err)
+	}
+	return nil
+}
+
+// beforeSnapshotRename, when set by a test, runs between writing a snapshot
+// and renaming it into place, standing in for a failure at that point.
+var beforeSnapshotRename func(tmp string) error
+
+// SnapshotTempName is where Snapshot writes dest before renaming it: the same
+// directory, with a leading "." and a ".tmp" suffix, so it never matches a
+// snapshot name.
+func SnapshotTempName(dest string) string {
+	return filepath.Join(filepath.Dir(dest), "."+filepath.Base(dest)+".tmp")
+}
+
+func syncFile(p string) error {
+	f, err := os.Open(p)
+	if err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// syncDir makes a rename in dir durable. File systems that can't sync a
+// directory say so with EINVAL or ENOTSUP; there is nothing more to do there.
+func syncDir(dir string) error {
+	err := syncFile(dir)
+	if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+		return nil
+	}
 	return err
+}
+
+// sqliteMagic starts every SQLite database file.
+const sqliteMagic = "SQLite format 3\x00"
+
+// ErrBadSnapshot means a file is not a complete SQLite database.
+var ErrBadSnapshot = errors.New("not a complete SQLite database")
+
+// CheckSnapshot reports whether the file at p looks like a complete SQLite
+// database: it has the SQLite header, a valid page size, and (when the header
+// records it, as every SQLite since 2010 does) exactly as many pages as the
+// header says. It catches empty, truncated and foreign files without opening
+// them; it is not an integrity check.
+func CheckSnapshot(p string) error {
+	f, err := os.Open(p)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s: %w (not a regular file)", p, ErrBadSnapshot)
+	}
+	var h [100]byte
+	if _, err := io.ReadFull(f, h[:]); err != nil {
+		return fmt.Errorf("%s: %w (%d bytes)", p, ErrBadSnapshot, fi.Size())
+	}
+	if string(h[:16]) != sqliteMagic {
+		return fmt.Errorf("%s: %w (no SQLite header)", p, ErrBadSnapshot)
+	}
+	pageSize := int64(binary.BigEndian.Uint16(h[16:18]))
+	if pageSize == 1 {
+		pageSize = 65536
+	}
+	if pageSize < 512 || pageSize > 65536 || pageSize&(pageSize-1) != 0 {
+		return fmt.Errorf("%s: %w (bad page size %d)", p, ErrBadSnapshot, pageSize)
+	}
+	size := fi.Size()
+	pages := int64(binary.BigEndian.Uint32(h[28:32]))
+	changes, validFor := binary.BigEndian.Uint32(h[24:28]), binary.BigEndian.Uint32(h[92:96])
+	switch {
+	case pages > 0 && changes == validFor:
+		if size != pages*pageSize {
+			return fmt.Errorf("%s: %w (%d bytes, header says %d pages of %d)", p, ErrBadSnapshot, size, pages, pageSize)
+		}
+	case size < pageSize || size%pageSize != 0:
+		return fmt.Errorf("%s: %w (%d bytes is not a whole number of %d-byte pages)", p, ErrBadSnapshot, size, pageSize)
+	}
+	return nil
 }
 
 // ImportResult summarises an import.
 type ImportResult struct {
 	Created, Updated, Skipped int
-	Errors                    []string
+	Errors                    []string // items that failed; nothing was imported
+	Committed                 bool     // the changes were saved
 }
 
-// Import creates links from f; an existing live link with the same key is
-// skipped, or updated when overwrite is set. Fields must already be valid.
-func (s *Store) Import(ctx context.Context, items []Fields, a Actor, overwrite bool) (ImportResult, error) {
+// ImportOptions controls Import.
+type ImportOptions struct {
+	Overwrite bool // update existing live links instead of skipping them
+	DryRun    bool // do everything, then roll it back
+}
+
+// Import creates links from items in one transaction; an existing live link
+// with the same key is skipped, or updated when Overwrite is set. Fields must
+// already be valid.
+//
+// It is all or nothing: when any item fails (the link cap, for example),
+// every item is still tried so that res.Errors lists all the failures, and
+// then nothing is saved. A dry run saves nothing either, but reports exactly
+// what the import would do. The returned error is for failures of the
+// database itself.
+func (s *Store) Import(ctx context.Context, items []Fields, a Actor, opt ImportOptions) (ImportResult, error) {
 	var res ImportResult
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return res, err
+	}
+	defer tx.Rollback()
 	for _, f := range items {
-		cur, err := s.Get(ctx, link.Key(f.Name))
+		cur, err := getByKey(ctx, tx, link.Key(f.Name))
 		switch {
 		case errors.Is(err, ErrNotFound):
-			if _, err := s.create(ctx, f, a, "import"); err != nil {
-				res.Errors = append(res.Errors, f.Name+": "+err.Error())
-				continue
+			_, err = s.createTx(ctx, tx, f, a, "import")
+			if err == nil {
+				res.Created++
 			}
-			res.Created++
 		case err != nil:
 			return res, err
-		case !overwrite || cur.Fields() == f:
+		case !opt.Overwrite || cur.Fields() == f:
 			res.Skipped++
 		default:
-			if _, err := s.Update(ctx, cur.ID, cur.Rev, f, a); err != nil {
-				res.Errors = append(res.Errors, f.Name+": "+err.Error())
-				continue
+			_, err = s.apply(ctx, tx, cur, f, a, "update", false)
+			if err == nil {
+				res.Updated++
 			}
-			res.Updated++
+		}
+		switch {
+		case errors.Is(err, ErrLimit), errors.Is(err, ErrExists):
+			res.Errors = append(res.Errors, f.Name+": "+err.Error())
+		case err != nil:
+			return res, err
 		}
 	}
+	if len(res.Errors) > 0 || opt.DryRun {
+		return res, nil // rolled back
+	}
+	if err := tx.Commit(); err != nil {
+		return res, err
+	}
+	res.Committed = true
 	return res, nil
 }

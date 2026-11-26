@@ -31,6 +31,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -53,6 +54,7 @@ const (
 	defaultSnapshotDir = "/var/lib/byname/snapshots"
 	defaultThrottled   = "/sys/devices/platform/soc/soc:firmware/get_throttled"
 	tailnetNets        = "100.64.0.0/10,fd7a:115c:a1e0::/48"
+	defaultMaxLinks    = 10000
 )
 
 func main() {
@@ -75,6 +77,9 @@ func main() {
 		os.Exit(2)
 	}
 	if err := cmd(os.Args[2:]); err != nil {
+		if errors.Is(err, errUsage) {
+			os.Exit(2)
+		}
 		fmt.Fprintf(os.Stderr, "byname %s: %v\n", os.Args[1], err)
 		os.Exit(1)
 	}
@@ -158,7 +163,7 @@ func serve(args []string) error {
 	snapKeep := fs.Int("snapshot-keep", 14, "snapshots kept locally")
 	snapEvery := fs.Duration("snapshot-every", 24*time.Hour, "periodic snapshot interval")
 	clickFlush := fs.Duration("click-flush", 5*time.Minute, "how often batched click counts are written")
-	maxLinks := fs.Int("max-links", 10000, "maximum live links (0 = unlimited)")
+	maxLinks := fs.Int("max-links", defaultMaxLinks, "maximum live links (0 = unlimited)")
 	writesPerMin := fs.Float64("write-rate", 30, "changes allowed per device per minute")
 	writeBurst := fs.Int("write-burst", 10, "burst of changes allowed per device")
 	writeDaily := fs.Int("write-daily", 300, "changes allowed per device per 24 hours (0 = unlimited)")
@@ -178,8 +183,12 @@ func serve(args []string) error {
 	slackID := fs.String("slack-client-id", "", "Slack app client ID (enables Sign in with Slack)")
 	slackSecret := fs.String("slack-client-secret-file", "", "file holding the Slack client secret (default: systemd credential byname.slack-client-secret)")
 	slackTeams := fs.String("slack-teams", "", "comma-separated Slack workspace IDs (T0123ABCD) whose members may sign in")
+	dev := fs.Bool("dev", false, "development mode (make run): localhost peers in --allow-cidrs get every page, not just /_/healthz; never on a server")
 	if err := parse(fs, args); err != nil {
 		return err
+	}
+	if *dev && *publicURL != "" {
+		return errors.New("--dev is for running byname on a development machine and can't be combined with --public-url")
 	}
 
 	log, err := newLogger(*logLevel, *logFormat)
@@ -202,6 +211,12 @@ func serve(args []string) error {
 		*snapDir = filepath.Clean(*snapDir)
 	}
 
+	pub, err := parsePublic(*publicURL, *publicListen)
+	if err != nil {
+		return err
+	}
+	*publicListen = pub.listen
+
 	st, err := store.Open(*dbPath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
@@ -209,7 +224,7 @@ func serve(args []string) error {
 	defer st.Close()
 
 	svc := app.New(st, app.Config{
-		SelfHosts:     hostList,
+		SelfHosts:     selfHosts(hostList, pub.host),
 		MaxLinks:      *maxLinks,
 		ClickFlush:    *clickFlush,
 		SnapshotDir:   *snapDir,
@@ -258,6 +273,7 @@ func serve(args []string) error {
 	webCfg := web.Config{
 		Hosts:         hostList,
 		AllowedNets:   nets,
+		DevLocalhost:  *dev,
 		WriteRate:     limit,
 		WriteBurst:    *writeBurst,
 		WriteDaily:    *writeDaily,
@@ -269,42 +285,13 @@ func serve(args []string) error {
 		Providers:     providers,
 		SessionTTL:    *sessionTTL,
 	}
-	var publicHost string
-	if *publicURL != "" {
-		u, err := url.Parse(*publicURL)
-		if err != nil {
-			return fmt.Errorf("--public-url: %w", err)
-		}
-		publicHost = strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
-		if *publicListen == "" {
-			*publicListen = ":443"
-			if strings.HasSuffix(publicHost, ".ts.net") {
-				*publicListen = "unix:/run/byname/public.sock"
-			}
-		}
-		webCfg.PublicBehindTailscale = strings.HasPrefix(*publicListen, "unix:")
-		if !webCfg.PublicBehindTailscale && u.Port() != "" && u.Port() != "443" {
-			return errors.New("--public-url: a directly served address must use the default https port")
-		}
-	}
+	webCfg.PublicBehindTailscale = pub.behindTailscale
 	handler, err := web.New(webCfg, svc, who)
 	if err != nil {
 		return err
 	}
 
-	newServer := func(h http.Handler) *http.Server {
-		return &http.Server{
-			Handler:           h,
-			ReadHeaderTimeout: 5 * time.Second,
-			ReadTimeout:       10 * time.Second,
-			// Covers a sign-in callback, which waits up to 20 s for the
-			// provider's token endpoint.
-			WriteTimeout:   30 * time.Second,
-			IdleTimeout:    60 * time.Second,
-			MaxHeaderBytes: 16 << 10,
-			ErrorLog:       slog.NewLogLogger(log.Handler(), slog.LevelWarn),
-		}
-	}
+	newServer := func(h http.Handler) *http.Server { return newHTTPServer(h, log) }
 	srv := newServer(handler)
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -313,13 +300,13 @@ func serve(args []string) error {
 	var pubSrv *http.Server
 	var pubLn net.Listener
 	pubTLS := false
-	switch pub := handler.Public(); {
-	case pub == nil:
+	switch pubHandler := handler.Public(); {
+	case pubHandler == nil:
 	case webCfg.PublicBehindTailscale:
 		if pubLn, err = listenUnix(*publicListen); err != nil {
 			return fmt.Errorf("--public-listen: %w", err)
 		}
-		pubSrv = newServer(pub)
+		pubSrv = newServer(pubHandler)
 	default:
 		// Serve the public domain directly. Certificates come from Let's
 		// Encrypt, only ever for the public name (HostWhitelist), through the
@@ -331,7 +318,7 @@ func serve(args []string) error {
 		}
 		m := &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(publicHost),
+			HostPolicy: autocert.HostWhitelist(pub.host),
 			Cache:      autocert.DirCache(*acmeDir),
 			Email:      *acmeEmail,
 		}
@@ -340,22 +327,24 @@ func serve(args []string) error {
 			return fmt.Errorf("--public-listen: %w", err)
 		}
 		pubLn = guard(tcp, handler.Trusted, *maxConns, *maxPerPeer, log)
-		pubSrv = newServer(pub)
-		pubSrv.TLSConfig = m.TLSConfig()
-		pubSrv.TLSConfig.MinVersion = tls.VersionTLS12
-		// Internet scanners cause a steady trickle of TLS handshake errors;
-		// keep those out of the journal unless debugging, but not the rest.
-		pubSrv.ErrorLog = stdlog.New(serverLogWriter{log}, "", 0)
+		pubSrv = newServer(pubHandler)
+		configurePublicTLS(pubSrv, m.TLSConfig(), log)
 		pubTLS = true
 		srv.Handler = m.HTTPHandler(handler.PrivateOrRedirect())
 		ln = guard(ln, handler.Trusted, *maxConns, *maxPerPeer, log)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	// Background work (click flushing, snapshots) has its own context: it
+	// stops only after both servers have finished their last requests, so
+	// clicks counted during shutdown are flushed too.
+	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	runCtx, stopRun := context.WithCancel(context.Background())
+	defer stopRun()
 	bgDone := make(chan struct{})
-	go func() { svc.Run(ctx); close(bgDone) }()
+	go func() { svc.Run(runCtx); close(bgDone) }()
 
+	servers := []*http.Server{srv}
 	errc := make(chan error, 2)
 	go func() { errc <- srv.Serve(ln) }()
 	switch {
@@ -364,34 +353,123 @@ func serve(args []string) error {
 	case pubSrv != nil:
 		go func() { errc <- pubSrv.Serve(pubLn) }()
 	}
+	if pubSrv != nil {
+		servers = append(servers, pubSrv)
+	}
 	var names []string
 	for _, p := range providers {
 		names = append(names, p.ID())
 	}
 	log.Info("byname serving", "version", version, "listen", *listen, "hosts", hostList,
 		"allow", *allow, "whois", !*noWhois, "db", *dbPath, "snapshots", *snapDir,
-		"public", *publicURL, "public_listen", *publicListen, "sign_in", names)
+		"public", *publicURL, "public_listen", *publicListen, "sign_in", names, "dev", *dev)
 
+	var serveErr error
 	select {
-	case err := <-errc:
-		stop()
-		<-bgDone
-		return err
-	case <-ctx.Done():
+	case serveErr = <-errc:
+		log.Error("server stopped", "err", serveErr)
+	case <-sigCtx.Done():
 	}
+	// From here a second Ctrl-C (or SIGTERM) ends the process at once.
+	stop()
 	log.Info("shutting down")
-	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	stopServing(log, shutdownTimeout, servers, stopRun, bgDone)
+	return serveErr
+}
+
+const shutdownTimeout = 5 * time.Second
+
+// stopServing shuts the servers down together, letting requests in flight
+// finish for up to timeout, and only then stops background work (stopRun)
+// and waits for it (done), which flushes the click counts those last
+// requests added.
+func stopServing(log *slog.Logger, timeout time.Duration, servers []*http.Server, stopRun func(), done <-chan struct{}) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if err := srv.Shutdown(sctx); err != nil {
-		log.Warn("shutdown", "err", err)
+	var wg sync.WaitGroup
+	for _, s := range servers {
+		wg.Go(func() {
+			if err := s.Shutdown(ctx); err != nil {
+				log.Warn("shutdown", "err", err)
+			}
+		})
 	}
-	if pubSrv != nil {
-		if err := pubSrv.Shutdown(sctx); err != nil {
-			log.Warn("shutdown public", "err", err)
+	wg.Wait()
+	stopRun()
+	<-done
+}
+
+func newHTTPServer(h http.Handler, log *slog.Logger) *http.Server {
+	return &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		// Covers a sign-in callback, which waits up to 20 s for the
+		// provider's token endpoint.
+		WriteTimeout:   30 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 16 << 10,
+		ErrorLog:       slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	}
+}
+
+// maxStreamsPerConn caps concurrent HTTP/2 requests on one connection to the
+// public :443 listener. The listener's connection limits (--max-public-conns,
+// --max-conns-per-ip) then bound requests too, not just connections; Go's
+// default would allow at least 100 per connection. A page needs four.
+const maxStreamsPerConn = 8
+
+// configurePublicTLS sets srv up to terminate TLS for the internet with
+// tlsCfg (from autocert).
+func configurePublicTLS(srv *http.Server, tlsCfg *tls.Config, log *slog.Logger) {
+	tlsCfg.MinVersion = tls.VersionTLS12
+	srv.TLSConfig = tlsCfg
+	srv.HTTP2 = &http.HTTP2Config{MaxConcurrentStreams: maxStreamsPerConn}
+	// Internet scanners cause a steady trickle of TLS handshake errors;
+	// keep those out of the journal unless debugging, but not the rest.
+	srv.ErrorLog = stdlog.New(serverLogWriter{log}, "", 0)
+}
+
+// publicAddr is where and how the public address is served.
+type publicAddr struct {
+	host            string // lower case, no port or trailing dot; "" when off
+	listen          string // ":443" or "unix:/path"
+	behindTailscale bool   // served to Tailscale Funnel over a unix socket
+}
+
+// parsePublic reads --public-url and --public-listen. web.New checks the
+// URL's shape in detail; this decides only where it is served.
+func parsePublic(publicURL, listen string) (publicAddr, error) {
+	if publicURL == "" {
+		return publicAddr{listen: listen}, nil
+	}
+	u, err := url.Parse(publicURL)
+	if err != nil {
+		return publicAddr{}, fmt.Errorf("--public-url: %w", err)
+	}
+	p := publicAddr{host: strings.TrimSuffix(strings.ToLower(u.Hostname()), "."), listen: listen}
+	if p.listen == "" {
+		p.listen = ":443"
+		if strings.HasSuffix(p.host, ".ts.net") {
+			p.listen = "unix:/run/byname/public.sock"
 		}
 	}
-	<-bgDone // flushes click counts
-	return nil
+	p.behindTailscale = strings.HasPrefix(p.listen, "unix:")
+	if !p.behindTailscale && u.Port() != "" && u.Port() != "443" {
+		return publicAddr{}, errors.New("--public-url: a directly served address must use the default https port")
+	}
+	return p, nil
+}
+
+// selfHosts are the names links must not point at, because the link would
+// redirect to itself: every --hosts name and the public address's. In
+// --public-domain mode the public name is not among --hosts.
+func selfHosts(hosts []string, publicHost string) []string {
+	out := append([]string(nil), hosts...)
+	if publicHost != "" {
+		out = append(out, publicHost)
+	}
+	return out
 }
 
 // listenUnix listens on "unix:/path", owner-only. Only tailscaled (root) and
@@ -478,11 +556,14 @@ func sessions(args []string) error {
 		}
 		return nil
 	case len(rest) == 2 && rest[0] == "revoke":
-		email := strings.ToLower(rest[1])
+		var n int64
 		if rest[1] == "--all" {
-			email = ""
+			n, err = st.RevokeAllSessions(ctx)
+		} else if email := strings.ToLower(strings.TrimSpace(rest[1])); email == "" {
+			return errors.New(`revoke needs an email address, or --all to sign everyone out`)
+		} else {
+			n, err = st.RevokeSessions(ctx, email)
 		}
-		n, err := st.RevokeSessions(ctx, email)
 		if err != nil {
 			return err
 		}
@@ -490,9 +571,12 @@ func sessions(args []string) error {
 		return nil
 	}
 	fs.Usage()
-	os.Exit(2)
-	return nil
+	return errUsage
 }
+
+// errUsage tells main that a command has printed its usage: exit 2, with no
+// further message.
+var errUsage = errors.New("usage")
 
 func snapshot(args []string) error {
 	fs := newFlags("snapshot")
@@ -538,9 +622,12 @@ func runBackup(args []string) error {
 	if err != nil {
 		return err
 	}
-	if res.Skipped {
+	switch {
+	case res.Existed:
+		fmt.Printf("up to date: %s is already in s3://%s/\n", res.Snapshot, *bucket)
+	case res.Skipped:
 		fmt.Printf("up to date: %s already uploaded\n", res.Snapshot)
-	} else {
+	default:
 		fmt.Printf("uploaded %s to s3://%s/%s (%d bytes)\n", res.Snapshot, *bucket, res.Key, res.Bytes)
 	}
 	return nil
@@ -580,13 +667,27 @@ func importLinks(args []string) error {
 	fs := newFlags("import")
 	dbPath := fs.String("db", defaultDB, "SQLite database path")
 	hosts := fs.String("hosts", "", "the service's host names (rejects self-pointing links), as for serve")
+	publicURL := fs.String("public-url", "", "the service's public address, as for serve (rejects links pointing at it)")
+	maxLinks := fs.Int("max-links", defaultMaxLinks, "maximum live links (0 = unlimited), as for serve")
 	overwrite := fs.Bool("overwrite", false, "update links that already exist instead of skipping them")
-	dryRun := fs.Bool("dry-run", false, "validate only; change nothing")
+	dryRun := fs.Bool("dry-run", false, "report what the import would do; change nothing")
+	fs.Usage = func() {
+		fmt.Fprint(os.Stderr, `usage: byname import [flags] <file.json | ->
+
+Imports links from a byname export. Entries that aren't valid links are
+reported and left out. The rest are imported in one transaction: if any of
+them fails (the link cap, for example), nothing is imported. The exit status
+is 1 if any entry was invalid or failed.
+
+`)
+		fs.PrintDefaults()
+	}
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New(`usage: byname import [flags] <file.json | ->`)
+		fs.Usage()
+		return errUsage
 	}
 	var r io.Reader = os.Stdin
 	if p := fs.Arg(0); p != "-" {
@@ -604,13 +705,17 @@ func importLinks(args []string) error {
 	if ex.Format != web.ExportFormat {
 		return fmt.Errorf("not an byname export (format %q)", ex.Format)
 	}
+	pub, err := parsePublic(*publicURL, ":443")
+	if err != nil {
+		return err
+	}
 
 	st, err := store.Open(*dbPath)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
-	svc := app.New(st, app.Config{SelfHosts: splitList(*hosts)})
+	svc := app.New(st, app.Config{SelfHosts: selfHosts(splitList(*hosts), pub.host), MaxLinks: *maxLinks})
 
 	var (
 		valid []store.Fields
@@ -619,24 +724,33 @@ func importLinks(args []string) error {
 	for _, l := range ex.Links {
 		f, err := svc.Validate(app.Input{Name: l.Name, Target: l.Target, Description: l.Description})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "skip %q: %v\n", l.Name, err)
+			fmt.Fprintf(os.Stderr, "invalid %q: %v\n", l.Name, err)
 			bad++
 			continue
 		}
 		valid = append(valid, f)
 	}
-	if *dryRun {
-		fmt.Printf("dry run: %d valid, %d invalid\n", len(valid), bad)
-		return nil
-	}
-	res, err := st.Import(context.Background(), valid, store.Actor{Login: "import", IP: "local"}, *overwrite)
+	res, err := st.Import(context.Background(), valid, store.Actor{Login: "import", IP: "local"},
+		store.ImportOptions{Overwrite: *overwrite, DryRun: *dryRun})
 	if err != nil {
 		return err
 	}
 	for _, e := range res.Errors {
-		fmt.Fprintln(os.Stderr, "error:", e)
+		fmt.Fprintln(os.Stderr, "failed:", e)
 	}
-	fmt.Printf("created %d, updated %d, skipped %d, invalid %d, failed %d\n",
+	summary := fmt.Sprintf("created %d, updated %d, skipped %d, invalid %d, failed %d",
 		res.Created, res.Updated, res.Skipped, bad, len(res.Errors))
+	switch {
+	case len(res.Errors) > 0:
+		fmt.Printf("nothing imported (%s)\n", summary)
+		return fmt.Errorf("%d link(s) failed; nothing was imported", len(res.Errors))
+	case *dryRun:
+		fmt.Printf("dry run, nothing changed: would have %s\n", summary)
+	default:
+		fmt.Println(summary)
+	}
+	if bad > 0 {
+		return fmt.Errorf("invalid entries left out: %d", bad)
+	}
 	return nil
 }

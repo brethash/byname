@@ -119,16 +119,43 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	if v.ShowDeleted {
 		v.Title = "Deleted links"
 	}
+	page, err := strconv.Atoi(q.Get("page"))
+	if err != nil || page < 1 || page > maxListPage {
+		page = 1
+	}
+	// One extra row tells whether there is a next page.
 	links, err := s.svc.Store.List(r.Context(), store.ListOptions{
-		Query: v.Query, Sort: v.Sort, Deleted: v.ShowDeleted, Limit: 1000,
+		Query: v.Query, Sort: v.Sort, Deleted: v.ShowDeleted, Limit: listPageSize + 1, Offset: (page - 1) * listPageSize,
 	})
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
+	if len(links) > listPageSize {
+		links = links[:listPageSize]
+		v.NextPage = page + 1
+	}
+	if page > 1 {
+		v.PrevPage = page - 1
+	}
+	if len(links) > 0 {
+		v.First = (page-1)*listPageSize + 1
+		v.Last = v.First + len(links) - 1
+	}
 	v.Links = links
 	s.render(w, r, http.StatusOK, "list", v)
 }
+
+// The list page shows this many links at a time, and pages no further than
+// maxListPage (past MaxLinks at the default cap).
+const (
+	listPageSize = 1000
+	maxListPage  = 1000
+)
+
+// historyPageSize is how many history entries a link's page shows at once;
+// older ones are a link away.
+const historyPageSize = 50
 
 func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 	ev, err := s.svc.Store.RecentEvents(r.Context(), 200)
@@ -226,13 +253,25 @@ func (s *Server) detailByID(w http.ResponseWriter, r *http.Request) {
 	s.detail(w, r, l, "")
 }
 
+// detail shows a link and a page of its history: the newest entries, or
+// with ?before=<entry id> the ones older than that.
 func (s *Server) detail(w http.ResponseWriter, r *http.Request, l store.Link, msg string) {
-	hist, err := s.svc.Store.History(r.Context(), l.ID)
+	before, err := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
+	if err != nil || before < 0 {
+		before = 0
+	}
+	hist, err := s.svc.Store.History(r.Context(), l.ID, before, historyPageSize+1)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	s.render(w, r, http.StatusOK, "detail", view{Title: s.display + "/" + l.Name, Link: &l, Events: hist, Message: msg})
+	v := view{Title: s.display + "/" + l.Name, Link: &l, Message: msg, OlderHistory: before > 0}
+	if len(hist) > historyPageSize {
+		hist = hist[:historyPageSize]
+		v.OlderThan = hist[len(hist)-1].ID
+	}
+	v.Events = hist
+	s.render(w, r, http.StatusOK, "detail", v)
 }
 
 func (s *Server) editForm(w http.ResponseWriter, r *http.Request) {
@@ -280,7 +319,11 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, http.StatusNotFound, "Not found", "No such link.")
 		return
 	}
-	if err := s.svc.Delete(r.Context(), id, actorFrom(r)); err != nil {
+	if !s.parseForm(w, r) {
+		return
+	}
+	rev, _ := strconv.ParseInt(r.PostFormValue("rev"), 10, 64)
+	if err := s.svc.Delete(r.Context(), id, rev, actorFrom(r)); err != nil {
 		s.fail(w, r, err)
 		return
 	}

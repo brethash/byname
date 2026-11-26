@@ -234,7 +234,9 @@ that step 2 wrote: `sudo byname-restore $(ls -1 /var/lib/byname/snapshots/byname
 ## Backups (S3)
 
 `byname serve` writes a snapshot 60 s after any change and every 24 h. The hourly
-`byname-backup.timer` uploads the newest one if it hasn't uploaded it yet.
+`byname-backup.timer` uploads the newest one if it hasn't uploaded it yet. It
+refuses a snapshot that isn't a complete SQLite file, and never replaces an
+object already in the bucket.
 
 ### One-time AWS setup (from your Mac, with admin credentials)
 
@@ -254,11 +256,21 @@ aws iam put-user-policy --user-name byname-backup --policy-name byname-backup-pu
 aws iam create-access-key --user-name byname-backup      # note the key id and secret
 ```
 
-The key can only `PutObject` (with SSE) under `byname/`. It cannot list, read or
-delete, and versioning keeps every earlier object even if a key is
-overwritten. A stolen Pi or a compromised server therefore can't destroy the
-backup history. Cost
-for a household's links is a fraction of a cent a month.
+The key can only create new objects (with SSE) under `byname/`. Every upload
+sends `If-None-Match: *`, and the policy refuses any `PutObject` without it, so
+the key can't replace an existing backup. It can't list, read or delete
+either. A stolen Pi or a compromised server can therefore add objects, but
+can't destroy or rewrite the backup history.
+
+The lifecycle rule expires each backup a year after its upload, then keeps
+that expired version for another year before deleting it. Cost for a
+household's links is a fraction of a cent a month.
+
+Set up with an older copy of these files? Deploy this version first (older ones upload
+without `If-None-Match`, which the new policy refuses), then re-run the
+`put-bucket-lifecycle-configuration` and `put-user-policy` commands above. The
+old policy let the key overwrite backups, and the old lifecycle rule deleted
+replaced versions after 90 days.
 
 ### On the host
 

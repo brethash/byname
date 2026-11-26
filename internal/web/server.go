@@ -23,6 +23,7 @@ import (
 	"byname/internal/app"
 	"byname/internal/auth"
 	"byname/internal/link"
+	"byname/internal/logsample"
 	"byname/internal/store"
 	"byname/internal/whois"
 )
@@ -33,7 +34,15 @@ type Config struct {
 	// name used in the UI ("me" → "me/wiki").
 	Hosts []string
 	// AllowedNets are the peer networks allowed to connect (the tailnet).
+	// Localhost peers, even when allowed, get only GET /_/healthz: anything on
+	// the machine that forwards traffic to localhost (a reverse proxy, a raw
+	// TCP forward such as `tailscale funnel --tls-terminated-tcp=443
+	// tcp://localhost:80`) must not hand its clients the no-login handler.
 	AllowedNets []netip.Prefix
+	// DevLocalhost gives allowed localhost peers the whole private handler.
+	// It is for running byname on a development machine (make run), never
+	// on a server.
+	DevLocalhost bool
 	// WriteRate and WriteBurst bound changes per device; WriteDaily caps a
 	// device's changes per 24 h (0 = no daily cap).
 	WriteRate  rate.Limit
@@ -79,6 +88,7 @@ type Server struct {
 	internetPages map[string]*template.Template
 	static        fs.FS
 	writes        *limiterSet
+	rejected      *logsample.Sampler // internet requests turned away (see logRequests)
 	started       time.Time
 	handler       http.Handler
 
@@ -117,14 +127,15 @@ func New(cfg Config, svc *app.Service, who whois.Resolver) (*Server, error) {
 		who = whois.Nop{}
 	}
 	s := &Server{
-		cfg:     cfg,
-		svc:     svc,
-		who:     who,
-		log:     cfg.Logger,
-		hosts:   make(map[string]bool),
-		display: normalizeHost(cfg.Hosts[0]),
-		writes:  newLimiterSet(cfg.WriteRate, cfg.WriteBurst, cfg.WriteDaily),
-		started: time.Now(),
+		cfg:      cfg,
+		svc:      svc,
+		who:      who,
+		log:      cfg.Logger,
+		hosts:    make(map[string]bool),
+		display:  normalizeHost(cfg.Hosts[0]),
+		writes:   newLimiterSet(cfg.WriteRate, cfg.WriteBurst, cfg.WriteDaily),
+		rejected: logsample.New(time.Minute),
+		started:  time.Now(),
 	}
 	s.favicon = faviconSVG(s.display)
 	for _, p := range cfg.AllowedNets {
@@ -206,7 +217,7 @@ func (s *Server) routes() http.Handler {
 	h = s.hostCheck(h)
 	h = s.sourceCheck(h)
 	h = notFunnel(h)
-	h = s.logRequests(h)
+	h = s.logRequests(h, false)
 	h = securityHeaders(h)
 	h = s.recoverer(h)
 	return h
@@ -330,6 +341,14 @@ type view struct {
 	Count       int
 	Sort        string
 	ShowDeleted bool
+	// List paging: links First..Last are shown; PrevPage and NextPage are
+	// page numbers, 0 when there is none.
+	First, Last        int
+	PrevPage, NextPage int
+	// History paging: OlderThan is the id of the oldest entry shown when
+	// there are older ones; OlderHistory is set on a page of older entries.
+	OlderThan    int64
+	OlderHistory bool
 
 	Form    formData
 	Missing string // not-found name

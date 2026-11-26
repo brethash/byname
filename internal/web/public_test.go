@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -356,7 +358,7 @@ func TestPublicSignInFlow(t *testing.T) {
 	if err != nil || l.CreatedBy != "alice@gmail.com (via Google)" {
 		t.Fatalf("created by %q (%v)", l.CreatedBy, err)
 	}
-	events, _ := h.svc.Store.History(t.Context(), l.ID)
+	events, _ := h.svc.Store.History(t.Context(), l.ID, 0, 0)
 	if len(events) != 1 || events[0].Actor.IP != "198.51.100.4" || events[0].Actor.Login != "alice@gmail.com" {
 		t.Fatalf("audit actor = %+v", events)
 	}
@@ -462,6 +464,30 @@ func TestPublicSessionEndsWhenRemovedFromAllowList(t *testing.T) {
 	expectStatus(t, h.pub("GET", "/", "", funnel("203.0.113.9"), withCookie(sess)), http.StatusSeeOther)
 	if list, _ := h.svc.Store.Sessions(t.Context()); len(list) != 0 {
 		t.Fatalf("session for a removed account kept: %+v", list)
+	}
+}
+
+// Only a session that doesn't exist clears the cookie. A database error
+// keeps it and asks for a retry: the sign-in is probably fine.
+func TestPublicSessionLookupErrors(t *testing.T) {
+	h, g := newPublicHarness(t)
+	sess, _ := signIn(t, h, g, "203.0.113.9", "/")
+
+	stale := &http.Cookie{Name: sessionCookie, Value: auth.Token()}
+	w := h.pub("GET", "/_/links", "", funnel("203.0.113.9"), withCookie(stale))
+	expectStatus(t, w, http.StatusSeeOther)
+	if c := cookieNamed(w, sessionCookie); c == nil || c.MaxAge >= 0 {
+		t.Fatalf("unknown session's cookie not cleared: %+v", c)
+	}
+
+	h.svc.Store.Close() // every lookup now fails
+	w = h.pub("GET", "/_/links", "", funnel("203.0.113.9"), withCookie(sess))
+	expectStatus(t, w, http.StatusServiceUnavailable)
+	if c := cookieNamed(w, sessionCookie); c != nil {
+		t.Fatalf("cookie touched on a database error: %+v", c)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("no Retry-After")
 	}
 }
 
@@ -605,5 +631,86 @@ func TestLimiterMemoryBounded(t *testing.T) {
 	ls.allow("fresh")
 	if len(ls.m) != 1 || ls.lru.Len() != 1 {
 		t.Fatalf("%d entries after going idle, want 1", len(ls.m))
+	}
+}
+
+// recorder is a slog.Handler that keeps every record.
+type recorder struct {
+	mu   sync.Mutex
+	recs []slog.Record
+}
+
+func (r *recorder) Enabled(context.Context, slog.Level) bool { return true }
+func (r *recorder) Handle(_ context.Context, rec slog.Record) error {
+	r.mu.Lock()
+	r.recs = append(r.recs, rec.Clone())
+	r.mu.Unlock()
+	return nil
+}
+func (r *recorder) WithAttrs([]slog.Attr) slog.Handler { return r }
+func (r *recorder) WithGroup(string) slog.Handler      { return r }
+
+// requests returns the "request" records at level.
+func (r *recorder) requests(level slog.Level) []slog.Record {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []slog.Record
+	for _, rec := range r.recs {
+		if rec.Level == level && rec.Message == "request" {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+func attr(rec slog.Record, key string) slog.Value {
+	var v slog.Value
+	rec.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			v = a.Value
+			return false
+		}
+		return true
+	})
+	return v
+}
+
+// Anyone on the internet can make byname turn requests away: those are logged
+// at info once a minute, the rest at debug. Paths are cut short.
+func TestRejectedInternetRequestsAreSampled(t *testing.T) {
+	g := newFakeGoogle(t)
+	rec := &recorder{}
+	h := newHarness(t, func(c *Config) {
+		c.PublicURL = publicURL
+		c.PublicBehindTailscale = true
+		c.Providers = []*auth.Provider{g.provider(t, "alice@gmail.com")}
+		c.Logger = slog.New(rec)
+	})
+	long := "/_/api/" + strings.Repeat("x", 3000)
+	saw429 := false
+	for range 40 {
+		w := h.pub("POST", long, "{}", funnel("203.0.113.9"), jsonBody())
+		saw429 = saw429 || w.Code == http.StatusTooManyRequests
+	}
+	if !saw429 {
+		t.Fatal("never rate-limited")
+	}
+	info := rec.requests(slog.LevelInfo)
+	if len(info) != 1 {
+		t.Fatalf("%d info lines for 40 rejected requests, want 1", len(info))
+	}
+	if p := attr(info[0], "path").String(); len(p) > maxLoggedPath+len("…") || !strings.HasPrefix(p, "/_/api/xxx") {
+		t.Fatalf("logged path of %d bytes: %.40q", len(p), p)
+	}
+	if n := len(rec.requests(slog.LevelDebug)); n != 39 {
+		t.Fatalf("%d debug lines, want 39", n)
+	}
+
+	// Changes on the private listener are still logged at info, every one.
+	for range 3 {
+		h.do("POST", "/_/links", form("name", "x", "target", "https://x.example/"), formBody(), sameOrigin())
+	}
+	if n := len(rec.requests(slog.LevelInfo)); n != 4 {
+		t.Fatalf("%d info lines after 3 private changes, want 4", n)
 	}
 }

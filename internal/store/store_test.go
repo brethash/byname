@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -61,18 +63,18 @@ func TestMaxLinks(t *testing.T) {
 	if _, err := s.Create(ctx, Fields{Name: "b", Target: "https://b.com"}, alice); !errors.Is(err, ErrLimit) {
 		t.Fatalf("create over cap err = %v, want ErrLimit", err)
 	}
-	if r, _ := s.Import(ctx, []Fields{{Name: "c", Target: "https://c.com"}}, alice, false); r.Created != 0 || len(r.Errors) != 1 {
+	if r, _ := s.Import(ctx, []Fields{{Name: "c", Target: "https://c.com"}}, alice, ImportOptions{}); r.Created != 0 || len(r.Errors) != 1 || r.Committed {
 		t.Fatalf("import over cap = %+v", r)
 	}
 	// Delete a, create b, then restoring or reverting a must not exceed the cap.
-	if err := s.Delete(ctx, a.ID, alice); err != nil {
+	if err := s.Delete(ctx, a.ID, a.Rev, alice); err != nil {
 		t.Fatal(err)
 	}
 	mustCreate(t, s, "b", "https://b.com")
 	if _, err := s.Restore(ctx, a.ID, alice); !errors.Is(err, ErrLimit) {
 		t.Fatalf("restore over cap err = %v", err)
 	}
-	hist, _ := s.History(ctx, a.ID)
+	hist, _ := s.History(ctx, a.ID, 0, 0)
 	if _, err := s.RevertTo(ctx, hist[len(hist)-1].ID, alice); !errors.Is(err, ErrLimit) {
 		t.Fatalf("revert-undelete over cap err = %v", err)
 	}
@@ -96,7 +98,7 @@ func TestUpdateConcurrencyAndHistory(t *testing.T) {
 	if _, err := s.Update(ctx, l.ID, l2.Rev, l2.Fields(), bob); err != nil {
 		t.Fatal(err)
 	}
-	hist, err := s.History(ctx, l.ID)
+	hist, err := s.History(ctx, l.ID, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,13 +126,20 @@ func TestDeleteRestoreRevert(t *testing.T) {
 	s := openTest(t)
 	l := mustCreate(t, s, "docs", "https://v1.example.com")
 	l, _ = s.Update(ctx, l.ID, l.Rev, Fields{Name: "docs", Target: "https://v2.example.com"}, alice)
-	if err := s.Delete(ctx, l.ID, bob); err != nil {
+	// Deleting a revision that isn't the current one is a conflict.
+	if err := s.Delete(ctx, l.ID, l.Rev-1, bob); !errors.Is(err, ErrConflict) {
+		t.Fatalf("delete with a stale rev: err = %v, want ErrConflict", err)
+	}
+	if _, err := s.Get(ctx, "docs"); err != nil {
+		t.Fatalf("stale delete took effect: %v", err)
+	}
+	if err := s.Delete(ctx, l.ID, l.Rev, bob); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Get(ctx, "docs"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("deleted link still live: %v", err)
 	}
-	if err := s.Delete(ctx, l.ID, bob); !errors.Is(err, ErrNotFound) {
+	if err := s.Delete(ctx, l.ID, l.Rev+1, bob); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("double delete err = %v", err)
 	}
 	// A new link may take the name of a deleted one...
@@ -139,7 +148,7 @@ func TestDeleteRestoreRevert(t *testing.T) {
 	if _, err := s.Restore(ctx, l.ID, alice); !errors.Is(err, ErrExists) {
 		t.Fatalf("restore over live key err = %v", err)
 	}
-	if err := s.Delete(ctx, other.ID, alice); err != nil {
+	if err := s.Delete(ctx, other.ID, other.Rev, alice); err != nil {
 		t.Fatal(err)
 	}
 	r, err := s.Restore(ctx, l.ID, alice)
@@ -147,7 +156,7 @@ func TestDeleteRestoreRevert(t *testing.T) {
 		t.Fatalf("restore = %+v, %v", r, err)
 	}
 	// Revert to the create event's version.
-	hist, _ := s.History(ctx, l.ID)
+	hist, _ := s.History(ctx, l.ID, 0, 0)
 	create := hist[len(hist)-1]
 	if create.Action != "create" {
 		t.Fatalf("oldest event = %s", create.Action)
@@ -157,7 +166,7 @@ func TestDeleteRestoreRevert(t *testing.T) {
 		t.Fatalf("revert = %+v, %v", v, err)
 	}
 	// A delete event has no "after" version.
-	hist, _ = s.History(ctx, l.ID)
+	hist, _ = s.History(ctx, l.ID, 0, 0)
 	for _, e := range hist {
 		if e.Action == "delete" {
 			if _, err := s.RevertTo(ctx, e.ID, bob); !errors.Is(err, ErrNotRevertible) {
@@ -234,6 +243,103 @@ func TestSnapshotAndReopen(t *testing.T) {
 	if v, _ := s2.SchemaVersion(ctx); v != 2 {
 		t.Fatalf("schema version = %d", v)
 	}
+	if err := CheckSnapshot(dest); err != nil {
+		t.Fatalf("CheckSnapshot(good snapshot) = %v", err)
+	}
+	if _, err := os.Stat(SnapshotTempName(dest)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary file left behind: %v", err)
+	}
+}
+
+// An interrupted snapshot must never leave a file under the final name, nor
+// its temporary file.
+func TestSnapshotInterrupted(t *testing.T) {
+	s := openTest(t)
+	mustCreate(t, s, "keep", "https://keep.example.com")
+	dir := t.TempDir()
+	noFiles := func(t *testing.T) {
+		t.Helper()
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			t.Errorf("left behind: %s", e.Name())
+		}
+	}
+
+	t.Run("failure before rename", func(t *testing.T) {
+		beforeSnapshotRename = func(string) error { return errors.New("power cut") }
+		t.Cleanup(func() { beforeSnapshotRename = nil })
+		if err := s.Snapshot(ctx, filepath.Join(dir, "a.db")); err == nil {
+			t.Fatal("snapshot succeeded")
+		}
+		noFiles(t)
+	})
+	t.Run("partial write", func(t *testing.T) {
+		beforeSnapshotRename = func(tmp string) error { return os.Truncate(tmp, 1000) }
+		t.Cleanup(func() { beforeSnapshotRename = nil })
+		if err := s.Snapshot(ctx, filepath.Join(dir, "b.db")); !errors.Is(err, ErrBadSnapshot) {
+			t.Fatalf("snapshot of a truncated copy: err = %v, want ErrBadSnapshot", err)
+		}
+		noFiles(t)
+	})
+	t.Run("cancelled", func(t *testing.T) {
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		if err := s.Snapshot(cctx, filepath.Join(dir, "c.db")); err == nil {
+			t.Fatal("snapshot succeeded with a cancelled context")
+		}
+		noFiles(t)
+	})
+	t.Run("leftover temporary file", func(t *testing.T) {
+		dest := filepath.Join(dir, "d.db")
+		if err := os.WriteFile(SnapshotTempName(dest), []byte("partial"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Snapshot(ctx, dest); err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckSnapshot(dest); err != nil {
+			t.Fatal(err)
+		}
+		os.Remove(dest)
+		noFiles(t)
+	})
+}
+
+func TestCheckSnapshot(t *testing.T) {
+	s := openTest(t)
+	mustCreate(t, s, "keep", "https://keep.example.com")
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.db")
+	if err := s.Snapshot(ctx, good); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := map[string][]byte{
+		"empty":         nil,
+		"text":          []byte("not a database at all, but long enough to have a header-sized prefix........................................"),
+		"header only":   body[:100],
+		"truncated":     body[:len(body)-1],
+		"one page less": body[:len(body)-4096],
+		"extra bytes":   append(append([]byte{}, body...), 0),
+	}
+	for name, b := range bad {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckSnapshot(p); !errors.Is(err, ErrBadSnapshot) {
+			t.Errorf("%s: CheckSnapshot = %v, want ErrBadSnapshot", name, err)
+		}
+	}
+	if err := CheckSnapshot(dir); !errors.Is(err, ErrBadSnapshot) {
+		t.Errorf("directory: CheckSnapshot = %v, want ErrBadSnapshot", err)
+	}
+	if err := CheckSnapshot(filepath.Join(dir, "missing")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("missing: CheckSnapshot = %v", err)
+	}
 }
 
 func TestImport(t *testing.T) {
@@ -243,13 +349,67 @@ func TestImport(t *testing.T) {
 		{Name: "exists", Target: "https://new.example.com"},
 		{Name: "fresh", Target: "https://fresh.example.com"},
 	}
-	r, err := s.Import(ctx, items, Actor{IP: "import"}, false)
-	if err != nil || r.Created != 1 || r.Skipped != 1 {
+	r, err := s.Import(ctx, items, Actor{IP: "import"}, ImportOptions{})
+	if err != nil || r.Created != 1 || r.Skipped != 1 || !r.Committed {
 		t.Fatalf("import = %+v, %v", r, err)
 	}
-	r, err = s.Import(ctx, items, Actor{IP: "import"}, true)
-	if err != nil || r.Updated != 1 || r.Skipped != 1 {
+	r, err = s.Import(ctx, items, Actor{IP: "import"}, ImportOptions{Overwrite: true})
+	if err != nil || r.Updated != 1 || r.Skipped != 1 || !r.Committed {
 		t.Fatalf("overwrite import = %+v, %v", r, err)
+	}
+	if l, _ := s.Get(ctx, "exists"); l.Target != "https://new.example.com" {
+		t.Fatalf("overwrite didn't apply: %+v", l)
+	}
+	// The same key twice in one file: the second sees the first.
+	r, err = s.Import(ctx, []Fields{{Name: "dup", Target: "https://a.example.com"}, {Name: "D-U-P", Target: "https://b.example.com"}},
+		Actor{IP: "import"}, ImportOptions{})
+	if err != nil || r.Created != 1 || r.Skipped != 1 {
+		t.Fatalf("duplicate import = %+v, %v", r, err)
+	}
+}
+
+func TestImportDryRun(t *testing.T) {
+	s := openTest(t)
+	r, err := s.Import(ctx, []Fields{{Name: "a", Target: "https://a.example.com"}}, Actor{IP: "import"}, ImportOptions{DryRun: true})
+	if err != nil || r.Created != 1 || r.Committed {
+		t.Fatalf("dry run = %+v, %v", r, err)
+	}
+	if n, _ := s.CountLive(ctx); n != 0 {
+		t.Fatalf("dry run created %d links", n)
+	}
+	if ev, _ := s.RecentEvents(ctx, 10); len(ev) != 0 {
+		t.Fatalf("dry run left %d history entries", len(ev))
+	}
+}
+
+// Import honours the link cap, and a failure anywhere imports nothing.
+func TestImportIsAllOrNothing(t *testing.T) {
+	s := openTest(t)
+	s.SetMaxLinks(3)
+	mustCreate(t, s, "one", "https://one.example.com")
+	items := []Fields{
+		{Name: "two", Target: "https://two.example.com"},
+		{Name: "three", Target: "https://three.example.com"},
+		{Name: "four", Target: "https://four.example.com"},
+		{Name: "five", Target: "https://five.example.com"},
+	}
+	r, err := s.Import(ctx, items, Actor{IP: "import"}, ImportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Committed || r.Created != 2 || len(r.Errors) != 2 || !strings.Contains(r.Errors[0], "four") {
+		t.Fatalf("import over the cap = %+v", r)
+	}
+	if n, _ := s.CountLive(ctx); n != 1 {
+		t.Fatalf("%d live links after a failed import, want 1", n)
+	}
+	if ev, _ := s.RecentEvents(ctx, 10); len(ev) != 1 {
+		t.Fatalf("%d history entries after a failed import, want 1", len(ev))
+	}
+	// Within the cap it goes through.
+	r, err = s.Import(ctx, items[:2], Actor{IP: "import"}, ImportOptions{})
+	if err != nil || !r.Committed || r.Created != 2 {
+		t.Fatalf("import within the cap = %+v, %v", r, err)
 	}
 }
 
@@ -284,5 +444,54 @@ func TestPragmasApplied(t *testing.T) {
 	s.db.QueryRow(`PRAGMA busy_timeout`).Scan(&busy)
 	if mode != "wal" || sync != 2 || fk != 1 || busy != 5000 {
 		t.Fatalf("journal_mode=%s synchronous=%d foreign_keys=%d busy_timeout=%d", mode, sync, fk, busy)
+	}
+}
+
+func TestHistoryPages(t *testing.T) {
+	s := openTest(t)
+	l := mustCreate(t, s, "h", "https://v0.example.com")
+	for i := 1; i < 8; i++ {
+		var err error
+		if l, err = s.Update(ctx, l.ID, l.Rev, Fields{Name: "h", Target: "https://v" + strconv.Itoa(i) + ".example.com"}, alice); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := s.History(ctx, l.ID, 0, 0)
+	if err != nil || len(all) != 8 {
+		t.Fatalf("History = %d entries, %v", len(all), err)
+	}
+	var paged []Event
+	for before := int64(0); ; {
+		page, err := s.History(ctx, l.ID, before, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) > 3 {
+			t.Fatalf("page of %d entries, limit 3", len(page))
+		}
+		paged = append(paged, page...)
+		if len(page) < 3 {
+			break
+		}
+		before = page[len(page)-1].ID
+	}
+	if len(paged) != len(all) {
+		t.Fatalf("pages hold %d entries, want %d", len(paged), len(all))
+	}
+	for i := range all {
+		if paged[i].ID != all[i].ID {
+			t.Fatalf("entry %d: %d, want %d (newest first, no gaps)", i, paged[i].ID, all[i].ID)
+		}
+	}
+}
+
+func TestListOffset(t *testing.T) {
+	s := openTest(t)
+	for _, n := range []string{"a", "b", "c"} {
+		mustCreate(t, s, n, "https://"+n+".example.com")
+	}
+	got, err := s.List(ctx, ListOptions{Limit: 2, Offset: 1})
+	if err != nil || strings.Join(names(got), ",") != "b,c" {
+		t.Fatalf("List(offset 1) = %v, %v", names(got), err)
 	}
 }

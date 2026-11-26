@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Limits.
@@ -37,9 +39,13 @@ var (
 	ErrTargetSelf      = errors.New("destination URL points back at this service")
 	ErrTargetTemplate  = errors.New("placeholders like {1} or {*} may only appear after the host name")
 	ErrDescriptionLong = fmt.Errorf("description is longer than %d characters", MaxDescriptionLen)
+	ErrDescriptionText = errors.New("description must be plain text (valid UTF-8, no control characters)")
 )
 
-var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+// nameRE is matched against the name as typed, and lists both cases
+// explicitly: lower-casing first, or (?i), would let Unicode letters that fold
+// to ASCII (U+212A KELVIN SIGN to "k", U+0130 to "i") pass as look-alikes.
+var nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // reservedKeys are lookup keys that can never be link names because the
 // server answers them itself.
@@ -55,7 +61,7 @@ func ParseName(raw string) (string, error) {
 	if name == "" {
 		return "", ErrNameEmpty
 	}
-	if len(name) > MaxNameLen || !nameRE.MatchString(strings.ToLower(name)) {
+	if len(name) > MaxNameLen || !nameRE.MatchString(name) {
 		return "", ErrNameInvalid
 	}
 	if reservedKeys[Key(name)] {
@@ -79,9 +85,29 @@ func Key(name string) string {
 	return b.String()
 }
 
-// ValidateDescription checks a free-text description.
+// ValidateDescription checks a free-text description and returns it
+// trimmed. It must be valid UTF-8 (the audit log stores it as JSON, which
+// would otherwise hold a different string from the link). Tabs and line
+// breaks, which a paste can bring into the one-line field, become spaces;
+// any other control character is refused.
 func ValidateDescription(raw string) (string, error) {
-	d := strings.TrimSpace(raw)
+	if !utf8.ValidString(raw) {
+		return "", ErrDescriptionText
+	}
+	bad := false
+	d := strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t', r == '\n', r == '\r', r == '\v', r == '\f':
+			return ' '
+		case unicode.IsControl(r):
+			bad = true
+		}
+		return r
+	}, raw)
+	if bad {
+		return "", ErrDescriptionText
+	}
+	d = strings.TrimSpace(d)
 	if len(d) > MaxDescriptionLen {
 		return "", ErrDescriptionLong
 	}
@@ -215,7 +241,7 @@ func stripPort(hostport string) string {
 // path-escaped. A target without placeholders gets rest appended to its path.
 // The result is re-validated, so a bad expansion is an error, never a redirect.
 func Expand(target, rest, rawQuery string, selfHosts []string) (string, error) {
-	segs, err := splitRest(rest)
+	raw, segs, err := splitRest(rest)
 	if err != nil {
 		return "", err
 	}
@@ -223,7 +249,7 @@ func Expand(target, rest, rawQuery string, selfHosts []string) (string, error) {
 	if HasPlaceholders(target) {
 		dest = expandTemplate(target, segs)
 	} else {
-		dest, err = appendPath(target, segs)
+		dest, err = appendPath(target, raw)
 		if err != nil {
 			return "", err
 		}
@@ -235,24 +261,26 @@ func Expand(target, rest, rawQuery string, selfHosts []string) (string, error) {
 	return dest, nil
 }
 
-// splitRest splits the escaped rest-of-path into unescaped segments, dropping
-// empty ones (me/name//x == me/name/x).
-func splitRest(rest string) ([]string, error) {
+// splitRest splits the escaped rest-of-path into segments, dropping empty
+// ones (me/name//x == me/name/x). It returns each segment twice: as it was
+// escaped in the request (raw), and unescaped (segs). Every segment must
+// unescape cleanly.
+func splitRest(rest string) (raw, segs []string, err error) {
 	if rest == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
-	var out []string
 	for _, s := range strings.Split(rest, "/") {
 		if s == "" {
 			continue
 		}
 		u, err := url.PathUnescape(s)
 		if err != nil {
-			return nil, fmt.Errorf("bad path segment %q: %w", s, err)
+			return nil, nil, fmt.Errorf("bad path segment %q: %w", s, err)
 		}
-		out = append(out, u)
+		raw = append(raw, s)
+		segs = append(segs, u)
 	}
-	return out, nil
+	return raw, segs, nil
 }
 
 func expandTemplate(target string, segs []string) string {
@@ -296,15 +324,23 @@ func substitute(which string, segs []string, inQuery bool) string {
 	return esc(segs[n-1])
 }
 
-func appendPath(target string, segs []string) (string, error) {
-	if len(segs) == 0 {
+// appendPath appends the request's still-escaped path segments to target's
+// path. They are passed to JoinPath as they arrived, never unescaped first:
+// JoinPath expects escaped elements, so an unescaped "%" (from "%25") would be
+// decoded a second time, or make JoinPath fail and silently keep the bare
+// target. Keeping the request's own escaping also keeps "%2F" a character
+// rather than a separator, and leaves characters such as "(" or ";" as the
+// browser sent them. "." and ".." segments are still resolved (they can only
+// move within the destination's host).
+func appendPath(target string, raw []string) (string, error) {
+	if len(raw) == 0 {
 		return target, nil
 	}
 	u, err := url.Parse(target)
 	if err != nil {
 		return "", ErrTargetHost
 	}
-	return u.JoinPath(segs...).String(), nil
+	return u.JoinPath(raw...).String(), nil
 }
 
 func appendQuery(dest, rawQuery string) string {

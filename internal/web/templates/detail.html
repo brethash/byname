@@ -19,13 +19,13 @@
   {{else}}
     <a class="btn primary" href="/{{.Name}}">Open</a>
     <a class="btn" href="/_/links/{{.ID}}/edit">Edit</a>
-    <form method="post" action="/_/links/{{.ID}}/delete" data-confirm="Delete {{host}}/{{.Name}}? It can be restored later."><button class="btn danger" type="submit">Delete</button></form>
+    <form method="post" action="/_/links/{{.ID}}/delete" data-confirm="Delete {{host}}/{{.Name}}? It can be restored later."><input type="hidden" name="rev" value="{{.Rev}}"><button class="btn danger" type="submit">Delete</button></form>
   {{end}}
   </div>
 </section>
 {{end}}
 <section>
-  <h2>History</h2>
+  <h2>History{{if .OlderHistory}} <span class="muted small">(older changes)</span>{{end}}</h2>
   <div class="scroll"><table class="events">
   <thead><tr><th>When</th><th>Who</th><th>What</th><th>Change</th><th></th></tr></thead>
   <tbody>{{range .Events}}
@@ -37,5 +37,9 @@
     <td>{{if and .After (not (sameFields .After $.Link))}}<form method="post" action="/_/events/{{.ID}}/revert" data-confirm="Set {{host}}/{{$.Link.Name}} back to this version?"><button class="btn small" type="submit">Restore this version</button></form>{{end}}</td>
   </tr>{{end}}
   </tbody></table></div>
+  {{if or .OlderThan .OlderHistory}}<nav class="pager" aria-label="History pages">
+    {{if .OlderHistory}}<a href="/_/links/{{.Link.ID}}">← Newest changes</a>{{end}}
+    {{if .OlderThan}}<span class="muted">Showing {{len .Events}} changes.</span> <a href="/_/links/{{.Link.ID}}?before={{.OlderThan}}">Older changes →</a>{{end}}
+  </nav>{{end}}
 </section>
 {{end}}

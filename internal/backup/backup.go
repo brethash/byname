@@ -18,12 +18,19 @@ import (
 	"strings"
 
 	"byname/internal/app"
+	"byname/internal/store"
 )
 
 // Uploader puts an object. *S3Uploader implements it; tests use a fake.
 type Uploader interface {
+	// Put creates the object key. It never replaces one: when key already
+	// exists it returns ErrExists and changes nothing.
 	Put(ctx context.Context, key string, body []byte, contentType string) error
 }
+
+// ErrExists means the object is already in the bucket. Backups are
+// write-once, so it is never replaced.
+var ErrExists = errors.New("object already exists")
 
 // Options configures a run.
 type Options struct {
@@ -38,6 +45,7 @@ type Result struct {
 	Key      string // uploaded object key ("" if nothing uploaded)
 	Bytes    int    // compressed size
 	Skipped  bool   // newest snapshot was already uploaded
+	Existed  bool   // Skipped because it was already in the bucket (the state file was behind)
 }
 
 // Run uploads the newest snapshot if it has not been uploaded yet.
@@ -55,15 +63,28 @@ func Run(ctx context.Context, up Uploader, opt Options) (Result, error) {
 		res.Skipped = true
 		return res, nil
 	}
-	body, err := gzipFile(filepath.Join(opt.SnapshotDir, newest))
+	// Never upload (and record as done) an empty or partial file: the restore
+	// instructions pick the newest object in the bucket.
+	p := filepath.Join(opt.SnapshotDir, newest)
+	if err := store.CheckSnapshot(p); err != nil {
+		return res, fmt.Errorf("refusing to upload the newest snapshot: %w", err)
+	}
+	body, err := gzipFile(p)
 	if err != nil {
 		return res, err
 	}
 	key := path.Join(strings.Trim(opt.Prefix, "/"), newest+".gz")
-	if err := up.Put(ctx, key, body, "application/gzip"); err != nil {
+	switch err := up.Put(ctx, key, body, "application/gzip"); {
+	case errors.Is(err, ErrExists):
+		// Uploaded before, but the state file didn't record it (it was lost,
+		// or the run stopped in between). The object is write-once, so the
+		// one in the bucket is that earlier upload.
+		res.Skipped, res.Existed = true, true
+	case err != nil:
 		return res, fmt.Errorf("upload %s: %w", key, err)
+	default:
+		res.Key, res.Bytes = key, len(body)
 	}
-	res.Key, res.Bytes = key, len(body)
 	if err := writeState(opt.StateFile, newest); err != nil {
 		return res, fmt.Errorf("uploaded, but could not record state: %w", err)
 	}

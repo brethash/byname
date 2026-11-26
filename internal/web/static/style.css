@@ -139,6 +139,7 @@ dd { margin: 0; }
 .list-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 0.5rem 1rem; margin-bottom: 1rem; }
 .sorts { color: var(--muted); font-size: 0.9rem; }
 .sorts a[aria-current] { font-weight: 700; color: var(--text); }
+.pager { display: flex; flex-wrap: wrap; gap: 1rem; align-items: baseline; margin: 0.75rem 0; }
 .signin { max-width: 28rem; margin: 2rem auto; }
 .signin .actions { flex-direction: column; align-items: stretch; }
 .signin .btn { text-align: center; }

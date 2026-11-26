@@ -5,7 +5,7 @@
       "Status": "Enabled",
       "Filter": { "Prefix": "byname/" },
       "Expiration": { "Days": 365 },
-      "NoncurrentVersionExpiration": { "NoncurrentDays": 90 },
+      "NoncurrentVersionExpiration": { "NoncurrentDays": 365 },
       "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 }
     }
   ]

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -139,6 +140,12 @@ func TestRedirects(t *testing.T) {
 		"/wiki?x=1":        "https://wiki.example.com/start?x=1",
 		"/gh/octocat":      "https://github.com/octocat",
 		"/gh/octocat/more": "https://github.com/octocat",
+		// The extra path is decoded once, never twice.
+		"/wiki/100%25":        "https://wiki.example.com/start/100%25",
+		"/wiki/50%25off/page": "https://wiki.example.com/start/50%25off/page",
+		"/wiki/a%2520b":       "https://wiki.example.com/start/a%2520b",
+		"/wiki/a%2Fb":         "https://wiki.example.com/start/a%2Fb",
+		"/gh/100%25":          "https://github.com/100%25",
 	}
 	for path, want := range cases {
 		w := h.do("GET", path, "")
@@ -359,13 +366,20 @@ func TestFormCreateEditDeleteRestoreRevert(t *testing.T) {
 	expectStatus(t, w, http.StatusConflict)
 
 	// Delete, then the link 404s, then restore.
-	expectStatus(t, h.do("POST", "/_/links/"+id+"/delete", "", sameOrigin()), http.StatusSeeOther)
+	// The delete button carries the revision shown; an older one conflicts.
+	if !strings.Contains(h.do("GET", "/_/links/"+id, "").Body.String(), `name="rev" value="2"`) {
+		t.Fatal("delete form missing rev")
+	}
+	expectStatus(t, h.do("POST", "/_/links/"+id+"/delete", form("rev", "1"), formBody(), sameOrigin()), http.StatusConflict)
+	expectStatus(t, h.do("POST", "/_/links/"+id+"/delete", "", sameOrigin()), http.StatusConflict)
+	expectStatus(t, h.do("GET", "/docs", ""), http.StatusFound)
+	expectStatus(t, h.do("POST", "/_/links/"+id+"/delete", form("rev", "2"), formBody(), sameOrigin()), http.StatusSeeOther)
 	expectStatus(t, h.do("GET", "/docs", ""), http.StatusNotFound)
 	expectStatus(t, h.do("POST", "/_/links/"+id+"/restore", "", sameOrigin()), http.StatusSeeOther)
 	expectStatus(t, h.do("GET", "/docs", ""), http.StatusFound)
 
 	// Revert to the first version.
-	hist, _ := h.svc.Store.History(context.Background(), l.ID)
+	hist, _ := h.svc.Store.History(context.Background(), l.ID, 0, 0)
 	first := hist[len(hist)-1]
 	w = h.do("POST", "/_/events/"+strconv.FormatInt(first.ID, 10)+"/revert", "", sameOrigin())
 	expectStatus(t, w, http.StatusSeeOther)
@@ -566,7 +580,11 @@ func TestAPI(t *testing.T) {
 		t.Fatalf("list = %+v", list)
 	}
 
-	expectStatus(t, h.do("DELETE", "/_/api/links/a", ""), http.StatusNoContent)
+	// Deletes name the revision, as updates do.
+	expectStatus(t, h.do("DELETE", "/_/api/links/a", ""), http.StatusBadRequest)
+	expectStatus(t, h.do("DELETE", "/_/api/links/a?rev=1", ""), http.StatusConflict)
+	expectStatus(t, h.do("GET", "/_/api/links/a", ""), http.StatusOK)
+	expectStatus(t, h.do("DELETE", "/_/api/links/a?rev=2", ""), http.StatusNoContent)
 	expectStatus(t, h.do("GET", "/_/api/links/a", ""), http.StatusNotFound)
 
 	// Cross-origin API write is blocked even with the right content type.
@@ -639,4 +657,132 @@ func TestMiscEndpoints(t *testing.T) {
 		}
 	}
 	expectStatus(t, h.do("GET", "/_/static/", ""), http.StatusNotFound) // no listings
+}
+
+// A link's page shows the newest history entries, with older ones a link
+// away; restoring a version from an older page still works.
+func TestHistoryIsPaged(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	l := h.create("busy", "https://v0.example.com")
+	for i := 1; i <= historyPageSize+10; i++ {
+		var err error
+		l, err = h.svc.Update(ctx, l.ID, l.Rev, app.Input{Name: "busy", Target: "https://v" + strconv.Itoa(i) + ".example.com"}, store.Actor{IP: "100.64.0.1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := strconv.FormatInt(l.ID, 10)
+	rows := func(body string) int { return strings.Count(body, `<td title=`) }
+
+	body := h.do("GET", "/_/links/"+id, "").Body.String()
+	if n := rows(body); n != historyPageSize {
+		t.Fatalf("first page shows %d entries, want %d", n, historyPageSize)
+	}
+	older := regexp.MustCompile(`href="(/_/links/` + id + `\?before=\d+)"`).FindStringSubmatch(body)
+	if older == nil {
+		t.Fatal("no link to older changes")
+	}
+	// The preview (me/busy+) pages the same way.
+	if n := rows(h.do("GET", "/busy+", "").Body.String()); n != historyPageSize {
+		t.Fatalf("preview shows %d entries", n)
+	}
+
+	body = h.do("GET", older[1], "").Body.String()
+	if n := rows(body); n != 11 {
+		t.Fatalf("older page shows %d entries, want 11", n)
+	}
+	if strings.Contains(body, "?before=") || !strings.Contains(body, "Newest changes") {
+		t.Fatal("last page links further back, or not back to the newest")
+	}
+	first := regexp.MustCompile(`action="/_/events/(\d+)/revert"`).FindAllStringSubmatch(body, -1)
+	if len(first) == 0 {
+		t.Fatal("no restore buttons on the older page")
+	}
+	w := h.do("POST", "/_/events/"+first[len(first)-1][1]+"/revert", "", sameOrigin())
+	expectStatus(t, w, http.StatusSeeOther)
+	if loc := h.do("GET", "/busy", "").Header().Get("Location"); loc != "https://v0.example.com" {
+		t.Fatalf("after restoring the oldest version → %q", loc)
+	}
+}
+
+// The list shows listPageSize links a page and says so, with a way on.
+func TestListIsPaged(t *testing.T) {
+	h := newHarness(t)
+	items := make([]store.Fields, listPageSize+5)
+	for i := range items {
+		n := fmt.Sprintf("l%05d", i)
+		items[i] = store.Fields{Name: n, Target: "https://" + n + ".example.com"}
+	}
+	if r, err := h.svc.Store.Import(context.Background(), items, store.Actor{IP: "local"}, store.ImportOptions{}); err != nil || !r.Committed {
+		t.Fatalf("import = %+v, %v", r, err)
+	}
+	rows := func(body string) int { return strings.Count(body, `<td class="num">`) }
+
+	body := h.do("GET", "/_/links?sort=name", "").Body.String()
+	if n := rows(body); n != listPageSize {
+		t.Fatalf("first page shows %d links, want %d", n, listPageSize)
+	}
+	if !strings.Contains(body, "Showing 1–1000") || !strings.Contains(body, "page=2") {
+		t.Fatal("first page doesn't say it's partial, or has no next link")
+	}
+	body = h.do("GET", "/_/links?sort=name&page=2", "").Body.String()
+	if n := rows(body); n != 5 || !strings.Contains(body, "Showing 1001–1005") || !strings.Contains(body, "l01004") {
+		t.Fatalf("second page shows %d links", n)
+	}
+	if strings.Contains(body, "page=3") || !strings.Contains(body, "page=1") {
+		t.Fatal("second page links on, or not back")
+	}
+	// Small lists have no pager; nonsense pages fall back to the first.
+	for _, q := range []string{"?q=l00001", "?page=0", "?page=-3", "?page=x", "?page=99999999999999999999"} {
+		w := h.do("GET", "/_/links"+q, "")
+		expectStatus(t, w, http.StatusOK)
+	}
+	if body := h.do("GET", "/_/links?q=l00001", "").Body.String(); strings.Contains(body, "Showing") {
+		t.Fatal("a one-page result shows a pager")
+	}
+}
+
+// Localhost is often where forwarded traffic arrives from (a reverse proxy, a
+// raw TCP forward of Tailscale Funnel), so even when it is allowed it gets
+// only the health check; development mode trusts it fully.
+func TestLocalhostGetsOnlyTheHealthCheck(t *testing.T) {
+	withLocalhost := func(c *Config) {
+		c.AllowedNets = append(c.AllowedNets, netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128"))
+	}
+	h := newHarness(t, withLocalhost)
+	h.create("wiki", "https://wiki.example.com/")
+	for _, addr := range []string{"127.0.0.1:5000", "127.0.0.2:5000", "[::1]:5000", "[::ffff:127.0.0.1]:5000"} {
+		for _, c := range []struct{ method, path, body string }{
+			{"GET", "/", ""},
+			{"GET", "/wiki", ""},
+			{"GET", "/wiki+", ""},
+			{"GET", "/_/links", ""},
+			{"GET", "/_/export", ""},
+			{"GET", "/_/api/links", ""},
+			{"GET", "/_/healthz/", ""},
+			{"POST", "/_/healthz", ""},
+			{"POST", "/_/links", form("name", "x", "target", "https://x.example/")},
+		} {
+			w := h.do(c.method, c.path, c.body, peer(addr), formBody(), sameOrigin())
+			if w.Code != http.StatusForbidden {
+				t.Errorf("%s %s from %s: status %d, want 403", c.method, c.path, addr, w.Code)
+			}
+		}
+		expectStatus(t, h.do("GET", "/_/healthz", "", peer(addr)), http.StatusOK)
+		expectStatus(t, h.do("HEAD", "/_/healthz", "", peer(addr)), http.StatusOK)
+	}
+	if _, err := h.svc.Store.Get(context.Background(), "x"); err == nil {
+		t.Fatal("localhost created a link")
+	}
+	// The tailnet is unaffected.
+	expectStatus(t, h.do("GET", "/wiki", ""), http.StatusFound)
+
+	dev := newHarness(t, withLocalhost, func(c *Config) { c.DevLocalhost = true })
+	expectStatus(t, dev.do("GET", "/", "", peer("127.0.0.1:5000")), http.StatusOK)
+	expectStatus(t, dev.do("POST", "/_/links", form("name", "x", "target", "https://x.example/"),
+		peer("[::1]:5000"), formBody(), sameOrigin()), http.StatusSeeOther)
+	// Development mode trusts localhost only when it is allowed at all.
+	devNoLocal := newHarness(t, func(c *Config) { c.DevLocalhost = true })
+	expectStatus(t, devNoLocal.do("GET", "/", "", peer("127.0.0.1:5000")), http.StatusForbidden)
 }
