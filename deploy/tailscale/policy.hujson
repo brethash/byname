@@ -17,20 +17,28 @@
   "grants": [
     // Household members (not tagged servers, not shared-in users) may use byname:
     // http://me/ on port 80, and https://me.<tailnet>.ts.net on 443 when
-    // the public address is on.
+    // --funnel is on.
     {"src": ["autogroup:member"], "dst": ["tag:me"], "ip": ["tcp:80", "tcp:443"]},
+
+    // SSH to the host for you only. Tailscale SSH needs this network rule as
+    // well as the "ssh" rule below: without it, removing allow-all breaks
+    // `ssh <admin>@me` and `make deploy`.
+    {"src": ["<you@example.com>"], "dst": ["tag:me"], "ip": ["tcp:22"]},
   ],
 
-  // Only for bootstrap.sh --public: uncomment to let the host publish its
+  // Only for bootstrap.sh --funnel: uncomment to let the host publish its
   // https:// name on the internet with Tailscale Funnel, and turn on HTTPS
   // certificates (admin console → DNS). Leave it commented out for a
-  // tailnet-only byname.
+  // tailnet-only byname, or one with its own domain (--public-domain).
   // "nodeAttrs": [
   //   {"target": ["tag:me"], "attr": ["funnel"]},
   // ],
 
   "ssh": [
     // Tailscale SSH to the host for you only, with periodic browser re-check.
+    // While Tailscale SSH is on (tailscale up --ssh), tailscaled answers port
+    // 22 on the tailnet itself, so OpenSSH is not reachable over the tailnet;
+    // `sudo tailscale set --ssh=false` hands the port back to OpenSSH.
     {
       "action": "check",
       "src":    ["<you@example.com>"],
