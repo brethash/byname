@@ -463,6 +463,12 @@ check "live database untouched" cmp -s "$DB" "$WORK/live.before"
 LOG="$OUT/restore-latest-symlink.log"
 restore --latest || true
 check "--latest skips the symlink" bash -c "! grep -q 29990101 '$LOG'"
+# Nor through a path that reaches byname's directory via a symlink of yours.
+mkdir -p /srv
+ln -sfn "$SNAPS" /srv/byname-snapshots
+LOG="$OUT/restore-via-symlinked-dir.log"
+if restore /srv/byname-snapshots/byname-29990101T000000.000Z.db; then bad "restored through a symlinked directory"; else ok "a path through a symlink is read as byname"; fi
+rm -f /srv/byname-snapshots
 check "rootonly never restored" test "$(sqlite3 "$DB" "SELECT count(*) FROM links WHERE name = 'rootonly';")" == 0
 rm -f "$SNAPS/byname-29990101T000000.000Z.db"
 is_live v2

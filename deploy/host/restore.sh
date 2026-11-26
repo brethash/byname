@@ -36,13 +36,19 @@ usage() { echo "usage: sudo byname-restore <snapshot.db | snapshot.db.gz> | --la
 # and the like with root's rights.
 sql() { sqlite3 -safe -cmd 'PRAGMA trusted_schema = OFF;' "$CANDIDATE" "$@"; }
 as_byname() { runuser -u byname -- "$@"; }
-# Read FILE, as byname if it is under /var/lib/byname (a symlink planted there
-# then can't make root read something else).
+# Read FILE. byname's own files, and any path through a symlink, are read with
+# byname's rights, so a symlink byname planted can't make root read something
+# else. Root reads only plain paths elsewhere (an S3 backup in your home).
 read_file() {
-  case "$(realpath -s -m -- "$1")" in
-    /var/lib/byname/*) as_byname cat -- "$1" ;;
-    *) cat -- "$1" ;;
-  esac
+  local plain real
+  plain="$(realpath -s -m -- "$1")" # as written, symlinks not followed
+  real="$(realpath -e -- "$1")"     # where it really is
+  if [[ $plain == /var/lib/byname/* || $real == /var/lib/byname/* || $plain != "$real" ]]; then
+    as_byname cat -- "$1" ||
+      die "can't read $1 as byname (byname's files, and paths through a symlink, are read with byname's rights): copy it to a plain path first"
+  else
+    cat -- "$1"
+  fi
 }
 
 # byname's own snapshots, oldest first (their names sort by time).
