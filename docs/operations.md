@@ -72,7 +72,7 @@ for devices without it.
 ### 4. Bootstrap over the LAN
 
 ```sh
-scp -r deploy <you>@<pi-lan-ip>:
+git archive HEAD deploy/host deploy/systemd | ssh <you>@<pi-lan-ip> tar -x    # only what bootstrap needs
 ssh <you>@<pi-lan-ip> 'sudo ./deploy/host/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24 --lan-access --lan-domain lan'
 ```
 
@@ -221,9 +221,9 @@ matches the host, then on the host:
 
 1. verifies the binary's sha256;
 2. snapshots the database **with the current binary** (before any migration);
-3. switches the `current` symlink atomically and restarts `me`;
-4. polls `/_/healthz` for the new version for 20 s; on failure it switches
-   back and restarts the previous version.
+3. switches the `current` symlink atomically and restarts `byname`;
+4. polls `/_/healthz` for the new version (20 tries, up to about 80 s); on
+   failure it switches back and restarts the previous version.
 
 It refuses a dirty working tree unless you set `FORCE=1`.
 
@@ -315,7 +315,7 @@ bin/byname export --db /tmp/drill.db | head -40     # links are there
 | Bulk import | `sudo -u byname /usr/local/lib/byname/current/byname import --hosts me --dry-run file.json` |
 | Change settings | edit `/etc/byname/byname.local.env` (yours; `byname.env` is managed), then `sudo systemctl restart byname` |
 | Turn LAN access on/off | re-run `bootstrap.sh` with or without `--lan-access` |
-| Turn the public address on/off | re-run `bootstrap.sh` with or without `--public` ([public-access.md](public-access.md)) |
+| Turn the public address on/off | re-run `bootstrap.sh` with or without `--public-domain` or `--funnel` ([public-access.md](public-access.md)) |
 | Who is signed in (public address) | `sudo -u byname /usr/local/lib/byname/current/byname sessions`; `… sessions revoke <email>` signs someone out |
 | Rotate the AWS key | create a new key, replace `/etc/credstore/byname-backup-aws`, delete the old key |
 | Re-check baseline | `sudo byname-verify` |

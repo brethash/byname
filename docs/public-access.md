@@ -174,7 +174,10 @@ only by the service.
 ## 4. Turn it on
 
 Re-run the bootstrap with the flags you used before, plus `--public-domain
-DOMAIN` or `--funnel`:
+DOMAIN` or `--funnel`. It runs from the copy of `deploy/host` you made when
+you set the host up; if you have pulled changes since, copy it again first:
+`git archive HEAD deploy/host deploy/systemd | ssh admin@SERVER tar -x`
+(only what bootstrap needs; OpenTofu's files stay on your Mac).
 
 ```sh
 # your own domain, no Tailscale (a cloud server):

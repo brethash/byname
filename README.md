@@ -112,9 +112,9 @@ For example, the whole setup for your own domain with Slack sign-in and no
 Tailscale looks like this, run from the repo root:
 
 ```sh
-# deploy/cloud/aws/terraform.tfvars: name, public_domain, ipv4 = true, ssh_cidrs (see docs/cloud.md)
+# deploy/cloud/aws/terraform.tfvars from domain.tfvars.example: name, public_domain, ipv4 = true, ssh_cidrs (see docs/cloud.md)
 cd deploy/cloud/aws && tofu init && tofu apply && tofu output dns_records && cd -   # then add the DNS records
-scp -r deploy admin@me.example.com:
+git archive HEAD deploy/host deploy/systemd | ssh admin@me.example.com tar -x       # only what bootstrap needs
 ssh admin@me.example.com 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
   --no-tailscale --ssh-from any'
 # add BYNAME_SLACK_CLIENT_ID / BYNAME_SLACK_TEAMS and the Slack secret (docs/public-access.md)
@@ -124,7 +124,10 @@ make deploy TARGET=admin@me.example.com
 ssh admin@me.example.com sudo byname-verify
 ```
 
-Updates are one command: `make deploy TARGET=…` from `master`.
+Only `deploy/host` and `deploy/systemd` go to the server. OpenTofu's state,
+providers and `terraform.tfvars` stay on your Mac.
+
+Updates are one command: `make deploy TARGET=…` from `main`.
 
 On a Pi, SSH answers only the home network (or the tailnet), so deploy from
 home or over Tailscale: `make deploy TARGET=you@me`, not the public domain.

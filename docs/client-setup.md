@@ -13,12 +13,18 @@ device's IP address instead of a name. It won't work away from home.
 Try `http://me/_/whoami`: it shows your name (Tailscale) or "home network
 (no Tailscale)". Either way, links work.
 
+**With your own domain** (or Tailscale Funnel), any browser anywhere works
+with the full address, `https://me.example.com/wiki`, after signing in with
+Slack or Google. Nothing needs setting up. For something shorter, add the
+search shortcut below with `https://me.example.com/_/go?q=%s` as its URL:
+then `me` + space + `wiki` opens the link.
+
 ## Per browser
 
 | Browser | Typing `me/foo` | Setup |
 |---|---|---|
 | Chrome, Edge, Brave (desktop) | Should open the link | Optional: Settings → Search engine → Manage → Add: name `me`, shortcut `me`, URL `http://me/_/go?q=%s`. Then `me` + space + `wiki` works too |
-| Firefox (desktop) | Searches the web instead | `about:config` → add boolean `browser.fixup.domainwhitelist.byname` = `true`. byname pages also advertise themselves as a search engine, which Firefox can add from the address-bar search options |
+| Firefox (desktop) | Searches the web instead | `about:config` → add boolean `browser.fixup.domainwhitelist.me` = `true` (your service name in place of `me`). byname pages also advertise themselves as a search engine, which Firefox can add from the address-bar search options |
 | Safari (macOS, iOS) | Often searches instead | Type `http://me/foo` once; after that Safari autocompletes `me/…` from history. Bookmark `http://me/` on the home screen |
 | Chrome (Android) | Varies | Use `http://me/foo` the first time; add the search shortcut as on desktop |
 

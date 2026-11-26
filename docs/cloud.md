@@ -8,10 +8,11 @@ and you can combine them:
 |---|---|---|
 | People use | `https://me.example.com/wiki`, after signing in with Slack or Google | `me/wiki` on devices running Tailscale, no sign-in |
 | You administer it with | OpenSSH, open only to your own addresses (`ssh_cidrs`) | Tailscale SSH over the tailnet |
-| Open to the internet | TCP 80 and 443; TCP 22 from your addresses | nothing (only Tailscale's WireGuard port) |
+| Open to the internet | TCP 80 and 443; TCP 22 from your addresses | nothing (only Tailscale's WireGuard port), plus TCP 22 from your addresses if you set `ssh_cidrs` |
 | Server | needs IPv4 ($5.00 on Lightsail) | IPv6-only is enough ($3.50) |
 
-**Combining them.** Set `tailscale = true` *and* `public_domain`. Tailnet
+**Combining them.** Set `tailscale = true` *and* `public_domain` (start from
+`domain.tfvars.example` and add `tailscale = true`). Tailnet
 devices then use `me/` with no sign-in, and everyone else uses your domain
 and signs in. A Tailscale-only server can also get a public address without
 open ports through Tailscale Funnel ([public-access.md](public-access.md)).
@@ -68,13 +69,22 @@ sign-in, on Lightsail. Hetzner works the same way with
 - An SSH key (`~/.ssh/id_ed25519.pub`).
 - Your home IP address: `curl -s https://checkip.amazonaws.com`. AWS's
   firewall lets only this address reach SSH. If it changes, update
-  `ssh_cidrs` and run `tofu apply` again. With IPv4 on, `ssh_cidrs` needs at
-  least one IPv4 block. You can add your home IPv6 prefix as well.
+  `ssh_cidrs` and run `tofu apply` again. Add your home IPv6 prefix too if
+  your network has IPv6 (for example the /56 your router hands out).
+  Without one, SSH over IPv6 stays closed, and `ssh admin@me.example.com`
+  from a network with IPv6 tries the closed IPv6 address first and waits for
+  it to time out. Tell `ssh` to use IPv4 for the domain in `~/.ssh/config`:
+  ```
+  Host me.example.com
+    AddressFamily inet
+  ```
 - Access to your domain's DNS.
 - A Slack app. Its redirect URL is `https://me.example.com/_/auth/slack/callback`
   ([public-access.md → Slack](public-access.md#slack)).
 
 **2. Create the server.**
+
+The same settings as `domain.tfvars.example`, with this example's values:
 
 ```sh
 cd deploy/cloud/aws
@@ -94,9 +104,17 @@ tofu output dns_records
 OpenTofu refuses a server you couldn't reach or nobody could use. For
 example, it refuses no Tailscale without `ssh_cidrs`, and `public_domain`
 without `ipv4`. AWS's firewall allows TCP 80 and 443 from anywhere, and
-TCP 22 from `ssh_cidrs` only. After each apply, OpenTofu fails if AWS's
-stored rules let SSH in from the whole internet. To see the rules:
+TCP 22 from `ssh_cidrs` only, over IPv4 and IPv6 alike. Lightsail opens an
+address family that a rule leaves out to everyone, so when `ssh_cidrs` has
+no IPv6 prefix, the SSH rule lists `2001:db8::/128` for IPv6 instead: a
+documentation address that is never routed, so nobody can connect from it.
+After each apply, OpenTofu also fails if AWS's stored rules let SSH in from
+the whole internet. To see the rules:
 `aws lightsail get-instance-port-states --instance-name hg`.
+
+From now on, OpenTofu refuses any apply that would destroy or replace the
+server, and with it the database (`protect`, see
+[Replacing or tearing down the server](#replacing-or-tearing-down-the-server)).
 
 **3. DNS.** At your DNS host, create the two records `dns_records` printed:
 
@@ -112,7 +130,7 @@ from the repo root. `tofu output -raw next_steps` prints them with your
 values filled in.
 
 ```sh
-scp -r deploy admin@me.example.com:
+git archive HEAD deploy/host deploy/systemd | ssh admin@me.example.com tar -x
 ssh admin@me.example.com 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
   --no-tailscale --ssh-from any'
 
@@ -127,6 +145,11 @@ ssh admin@me.example.com 'sudo ./deploy/host/bootstrap.sh --admin-user admin --n
 make deploy TARGET=admin@me.example.com
 ssh admin@me.example.com sudo byname-verify
 ```
+
+The first line copies only what `bootstrap.sh` needs to `~/deploy` on the
+server: `deploy/host` and `deploy/systemd`, as committed. Never copy
+`deploy/cloud` there: OpenTofu's state (which holds the server's user data),
+its providers and your `terraform.tfvars` stay on your Mac.
 
 The `pbpaste` line sends the Slack client secret from your clipboard. The
 first visit to `https://me.example.com` gets byname its certificate from Let's
@@ -145,7 +168,9 @@ that made it, for example `alice@example.com (via Slack)`.
 2. **Tailscale policy**: merge
    [`deploy/tailscale/policy.hujson`](../deploy/tailscale/policy.hujson) into
    your tailnet policy. Use `tag:<name>`, and `"admin"` as the SSH user (that
-   is the admin account on cloud servers).
+   is the admin account on cloud servers). Keep its `tcp:22` grant: Tailscale
+   SSH needs that network rule as well as the `ssh` rule once the default
+   allow-all rule is gone.
 3. **No other device named `me`** on your tailnet, or the new server becomes
    `me-1`. If you're moving from the Pi, follow
    [Moving between hosts](#moving-between-hosts) first.
@@ -162,7 +187,7 @@ AWS Lightsail:
 
 ```sh
 cd deploy/cloud/aws
-cp terraform.tfvars.example terraform.tfvars    # set name, region, ssh_public_key, tailscale = true
+cp tailscale.tfvars.example terraform.tfvars    # set name, region, ssh_public_key
 export TF_VAR_tailscale_auth_key=tskey-auth-...
 tofu init
 tofu apply
@@ -172,7 +197,7 @@ Hetzner:
 
 ```sh
 cd deploy/cloud/hetzner
-cp terraform.tfvars.example terraform.tfvars    # set name, location, ssh_public_key, tailscale = true
+cp tailscale.tfvars.example terraform.tfvars    # set name, location, ssh_public_key
 export TF_VAR_hcloud_token=... TF_VAR_tailscale_auth_key=tskey-auth-...
 tofu init
 tofu apply                                      # shows which server type was in stock
@@ -182,7 +207,8 @@ First boot takes a minute or two. It sets the hostname, creates an `admin`
 account with your SSH key, installs Tailscale and joins your tailnet as `me`
 with Tailscale SSH on. Its log is `/var/log/cloud-init-output.log`. Once
 `tofu apply` finishes, only Tailscale's WireGuard port (UDP 41641) is open
-from the internet, and WireGuard never answers anyone it doesn't know.
+from the internet (plus TCP 22 from `ssh_cidrs`, if you set it), and
+WireGuard never answers anyone it doesn't know.
 
 On later `tofu apply` runs the auth key is no longer read, but the variable
 still needs some well-formed value: `TF_VAR_tailscale_auth_key=tskey-auth-unused`.
@@ -194,11 +220,14 @@ them from the repo root:
 
 ```sh
 tailscale ping me
-scp -r deploy admin@me:
+git archive HEAD deploy/host deploy/systemd | ssh admin@me tar -x
 ssh admin@me 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name me --tag tag:me'
 make deploy TARGET=admin@me
 ssh admin@me sudo byname-verify
 ```
+
+The second line copies only `deploy/host` and `deploy/systemd`, as in the
+walkthrough above; OpenTofu's files stay on your Mac.
 
 Then check a household device as in
 [operations.md, step 7](operations.md#7-check-every-household-device), using
@@ -211,17 +240,46 @@ the Tailscale steps only.
 rules. SSH accepts only your key during that window, and nothing answers on
 HTTP yet. Hetzner attaches its firewall at creation.
 
-**The server's `name` is fixed** once it exists. To rename, create a new
-server and move the data over.
+**If first boot fails.** For example, a server with Tailscale never joins
+the tailnet (`tailscale ping me` gets no answer after five minutes), because
+the auth key expired, wasn't pre-approved or tagged `tag:me`, or your policy
+doesn't define the tag. Where you can still log in, the log says why:
+`ssh admin@SERVER tail -50 /var/log/cloud-init-output.log`. A new server
+holds nothing yet, so the fix is to replace it. Delete any machine it left
+in the Tailscale admin console first, so the new one gets the name `me`,
+not `me-1`. Then, from `deploy/cloud/aws` (or `hetzner`):
+
+```sh
+export TF_VAR_tailscale_auth_key=tskey-auth-...    # a new one-off key, if it uses Tailscale
+tofu apply -var protect=false                      # protection off, with no other change
+tofu apply -var protect=false -replace=aws_lightsail_instance.server   # Hetzner: -replace=hcloud_server.server
+tofu apply                                         # protection back on
+```
+
+The new server gets new user data, so it runs first boot again with the new
+key. On AWS, its firewall rules and static IP are re-applied with it.
+
+**The server's `name` is fixed** once it exists. Changing it would replace
+the server, which `protect` refuses. To rename, create a new server and
+move the data over.
+
+**Set up with `scp -r deploy`?** Earlier versions of these steps copied the
+whole `deploy` directory to the server, including OpenTofu's state,
+providers and `terraform.tfvars`. Remove that copy:
+`ssh admin@SERVER rm -rf deploy/cloud`.
 
 **What `bootstrap.sh` does differently on a cloud server:**
 
 - no LAN options;
-- OpenSSH reachable only over the tailnet; without Tailscale, as
-  `--ssh-from` says. `--ssh-from any` leaves the address filter to the
-  provider's firewall (`ssh_cidrs`), so a new home address is fixed with
-  `tofu apply`. A specific address filters on the server too, but locks you
-  out if your address changes;
+- with Tailscale, you log in with Tailscale SSH. While it is on, tailscaled
+  answers port 22 on the tailnet itself, so OpenSSH is reachable over the
+  tailnet only after `sudo tailscale set --ssh=false`;
+- OpenSSH from the internet as `--ssh-from` says: required without
+  Tailscale, optional with it (`next_steps` adds it whenever `ssh_cidrs` is
+  set). `--ssh-from any` leaves the address filter to the provider's
+  firewall (`ssh_cidrs`), so a new home address is fixed with `tofu apply`.
+  A specific address filters on the server too, but locks you out if your
+  address changes;
 - the journal kept on disk, capped at 200 MB;
 - a 512 MB swap file on small servers.
 
@@ -255,7 +313,8 @@ Two things need IPv4, which is why `public_domain` requires `ipv4 = true`:
 Tailscale devices on IPv4-only networks still reach an IPv6-only server,
 through a Tailscale relay (DERP) instead of directly. `tailscale ping me`
 shows `via DERP(...)` for a relayed path and an address for a direct one.
-Changing `ipv4` on Lightsail later replaces the server.
+Changing `ipv4` on Lightsail later replaces the server, which `protect`
+refuses until you turn it off.
 
 ## Moving between hosts
 
@@ -281,13 +340,30 @@ and its full history:
 Tailscale devices keep working with no changes, because they only know the
 name. Home devices without Tailscale lose access when you move off the Pi.
 
-## Tear down
+## Replacing or tearing down the server
 
-- **AWS**: `tofu destroy`. This releases the static IP too.
-- **Hetzner**: set `protect = false`, run `tofu apply`, then `tofu destroy`.
+The database lives on the server's disk, so both stacks protect the server
+by default (`protect = true`). On Hetzner, that is Hetzner's own delete and
+rebuild protection. Lightsail has none, so the AWS stack stops any apply
+that would destroy or replace the server, before anything is touched:
+`tofu destroy`, `-replace`, or a changed `name`, `bundle_id`, `ipv4` or
+`availability_zone`.
 
-Then remove the machine from the Tailscale admin console (if it was on the
-tailnet) and the DNS records (if it had a domain). The S3 backups stay.
+To do it on purpose, turn protection off in an apply of its own, then run
+the destroying command with it still off:
+
+```sh
+tofu apply -var protect=false      # with no other change
+tofu destroy -var protect=false    # or the apply that replaces the server
+```
+
+- **Replacing** a server that holds links: take a snapshot first and
+  restore it on the new server, as in [Moving between hosts](#moving-between-hosts).
+  On AWS, a replacement keeps the static IP unless `name` changed. Afterwards
+  a plain `tofu apply` turns protection back on.
+- **Tearing down**: on AWS, `tofu destroy` releases the static IP too. Then
+  remove the machine from the Tailscale admin console (if it was on the
+  tailnet) and the DNS records (if it had a domain). The S3 backups stay.
 
 ## Security differences from the Pi
 
@@ -295,7 +371,7 @@ tailnet) and the DNS records (if it had a domain). The S3 backups stay.
 
 - the provider can read the disk;
 - with Tailscale, the auth key sits in user data;
-- break-glass access means rebuilding and restoring instead of plugging in
-  a keyboard;
+- break-glass access is OpenSSH from `ssh_cidrs`, or rebuilding and
+  restoring, instead of plugging in a keyboard;
 - without Tailscale, SSH and the web ports face the internet: SSH limited to
   your addresses, the web ports to anyone.
