@@ -89,7 +89,7 @@ func (s *Server) publicRoutes() http.Handler {
 	var h http.Handler = s.crossOrigin().Handler(s.mux(true))
 	h = limits(h)
 	h = s.publicGate(h)
-	h = s.logRequests(h)
+	h = s.logRequests(h, true)
 	if s.cfg.PublicBehindTailscale {
 		h = s.fromServe(h)
 	} else {

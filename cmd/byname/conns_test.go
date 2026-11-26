@@ -1,13 +1,43 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 )
+
+// recorder is a slog.Handler that keeps every record.
+type recorder struct {
+	mu   sync.Mutex
+	recs []slog.Record
+}
+
+func (r *recorder) Enabled(context.Context, slog.Level) bool { return true }
+func (r *recorder) Handle(_ context.Context, rec slog.Record) error {
+	r.mu.Lock()
+	r.recs = append(r.recs, rec)
+	r.mu.Unlock()
+	return nil
+}
+func (r *recorder) WithAttrs([]slog.Attr) slog.Handler { return r }
+func (r *recorder) WithGroup(string) slog.Handler      { return r }
+
+func (r *recorder) count(level slog.Level, msg string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, rec := range r.recs {
+		if rec.Level == level && rec.Message == msg {
+			n++
+		}
+	}
+	return n
+}
 
 // fakeListener hands out pipe connections with chosen remote addresses.
 type fakeListener struct{ conns chan net.Conn }
@@ -104,5 +134,33 @@ func TestPeerKey(t *testing.T) {
 	}
 	if peerKey(netip.MustParseAddr("192.0.2.1")) == peerKey(netip.MustParseAddr("192.0.2.2")) {
 		t.Error("IPv4 addresses should not share a key")
+	}
+}
+
+// A full listener warns once a minute, not once per refused connection.
+func TestGuardListenerFullLogIsSampled(t *testing.T) {
+	f := &fakeListener{conns: make(chan net.Conn, 100)}
+	rec := &recorder{}
+	l := guard(f, func(netip.Addr) bool { return false }, 1, 1, slog.New(rec))
+	dial(f, "203.0.113.1:1")
+	if _, err := l.Accept(); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 20 {
+		dial(f, netip.AddrPortFrom(netip.AddrFrom4([4]byte{198, 51, 100, byte(i + 1)}), 1).String())
+	}
+	tail := dial(f, "203.0.113.1:2") // over its per-address limit as well; closed too
+	close(f.conns)
+	if _, err := l.Accept(); err == nil {
+		t.Fatal("accepted a connection on a full listener")
+	}
+	if !tail.closed {
+		t.Fatal("connection not refused")
+	}
+	if n := rec.count(slog.LevelWarn, "connection refused: listener full"); n != 1 {
+		t.Fatalf("%d warnings for 21 refusals, want 1", n)
+	}
+	if n := rec.count(slog.LevelDebug, "connection refused: listener full"); n != 20 {
+		t.Fatalf("%d debug lines, want 20", n)
 	}
 }

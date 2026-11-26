@@ -7,6 +7,9 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"time"
+
+	"byname/internal/logsample"
 )
 
 // guardListener limits connections from the internet on a listener that
@@ -21,6 +24,10 @@ type guardListener struct {
 	perPeer int // per IPv4 address or IPv6 /64
 	log     *slog.Logger
 
+	// fullLog lets one "listener full" warning through a minute: a flood
+	// would otherwise log a line per refused connection.
+	fullLog *logsample.Sampler
+
 	mu    sync.Mutex
 	total int
 	peers map[netip.Prefix]int
@@ -28,7 +35,7 @@ type guardListener struct {
 
 func guard(l net.Listener, trusted func(netip.Addr) bool, max, perPeer int, log *slog.Logger) net.Listener {
 	return &guardListener{Listener: l, trusted: trusted, max: max, perPeer: perPeer, log: log,
-		peers: make(map[netip.Prefix]int)}
+		fullLog: logsample.New(time.Minute), peers: make(map[netip.Prefix]int)}
 }
 
 // peerKey groups a peer: one IPv4 address, or one IPv6 /64 (one host
@@ -63,7 +70,11 @@ func (l *guardListener) Accept() (net.Conn, error) {
 			l.mu.Unlock()
 			c.Close()
 			if full {
-				l.log.Warn("connection refused: listener full", "remote", ip, "max", l.max)
+				if ok, held := l.fullLog.Take(time.Now()); ok {
+					l.log.Warn("connection refused: listener full", "remote", ip, "max", l.max, "refused_since_last", held)
+				} else {
+					l.log.Debug("connection refused: listener full", "remote", ip, "max", l.max)
+				}
 			} else {
 				l.log.Debug("connection refused: too many from one address", "remote", key, "max", l.perPeer)
 			}

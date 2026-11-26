@@ -86,7 +86,12 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 
 // logRequests logs mutations and errors at info/error, everything else at
 // debug, so the journal (volatile on the Pi) is not filled by redirects.
-func (s *Server) logRequests(next http.Handler) http.Handler {
+//
+// On the public listener (public), requests from the internet that were
+// turned away for want of a sign-in (401) or for going too fast (429) are
+// anyone's to send: one a minute is logged at info, with a count of the rest,
+// which go to debug. Paths are cut short in every log line.
+func (s *Server) logRequests(next http.Handler, public bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w}
@@ -99,10 +104,22 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			rec.status == http.StatusMisdirectedRequest, rec.status == http.StatusTooManyRequests:
 			level = slog.LevelInfo
 		}
-		s.log.Log(r.Context(), level, "request", "method", r.Method, "path", r.URL.Path,
-			"status", rec.status, "ms", time.Since(start).Milliseconds(), "remote", r.RemoteAddr)
+		attrs := []any{"method", trunc(r.Method, 16), "path", trunc(r.URL.Path, maxLoggedPath),
+			"status", rec.status, "ms", time.Since(start).Milliseconds(), "remote", r.RemoteAddr}
+		if public && level == slog.LevelInfo && fromInternet(r) &&
+			(rec.status == http.StatusUnauthorized || rec.status == http.StatusTooManyRequests) {
+			if ok, held := s.rejected.Take(start); ok {
+				attrs = append(attrs, "similar_since_last", held)
+			} else {
+				level = slog.LevelDebug
+			}
+		}
+		s.log.Log(r.Context(), level, "request", attrs...)
 	})
 }
+
+// maxLoggedPath is how many characters of a request path a log line keeps.
+const maxLoggedPath = 120
 
 // notFunnel marks requests as arriving on the private listener, and refuses
 // any that Tailscale Funnel delivered. tailscaled always adds

@@ -23,6 +23,7 @@ import (
 	"byname/internal/app"
 	"byname/internal/auth"
 	"byname/internal/link"
+	"byname/internal/logsample"
 	"byname/internal/store"
 	"byname/internal/whois"
 )
@@ -87,6 +88,7 @@ type Server struct {
 	internetPages map[string]*template.Template
 	static        fs.FS
 	writes        *limiterSet
+	rejected      *logsample.Sampler // internet requests turned away (see logRequests)
 	started       time.Time
 	handler       http.Handler
 
@@ -125,14 +127,15 @@ func New(cfg Config, svc *app.Service, who whois.Resolver) (*Server, error) {
 		who = whois.Nop{}
 	}
 	s := &Server{
-		cfg:     cfg,
-		svc:     svc,
-		who:     who,
-		log:     cfg.Logger,
-		hosts:   make(map[string]bool),
-		display: normalizeHost(cfg.Hosts[0]),
-		writes:  newLimiterSet(cfg.WriteRate, cfg.WriteBurst, cfg.WriteDaily),
-		started: time.Now(),
+		cfg:      cfg,
+		svc:      svc,
+		who:      who,
+		log:      cfg.Logger,
+		hosts:    make(map[string]bool),
+		display:  normalizeHost(cfg.Hosts[0]),
+		writes:   newLimiterSet(cfg.WriteRate, cfg.WriteBurst, cfg.WriteDaily),
+		rejected: logsample.New(time.Minute),
+		started:  time.Now(),
 	}
 	s.favicon = faviconSVG(s.display)
 	for _, p := range cfg.AllowedNets {
@@ -214,7 +217,7 @@ func (s *Server) routes() http.Handler {
 	h = s.hostCheck(h)
 	h = s.sourceCheck(h)
 	h = notFunnel(h)
-	h = s.logRequests(h)
+	h = s.logRequests(h, false)
 	h = securityHeaders(h)
 	h = s.recoverer(h)
 	return h
