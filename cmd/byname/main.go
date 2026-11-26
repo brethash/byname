@@ -291,19 +291,7 @@ func serve(args []string) error {
 		return err
 	}
 
-	newServer := func(h http.Handler) *http.Server {
-		return &http.Server{
-			Handler:           h,
-			ReadHeaderTimeout: 5 * time.Second,
-			ReadTimeout:       10 * time.Second,
-			// Covers a sign-in callback, which waits up to 20 s for the
-			// provider's token endpoint.
-			WriteTimeout:   30 * time.Second,
-			IdleTimeout:    60 * time.Second,
-			MaxHeaderBytes: 16 << 10,
-			ErrorLog:       slog.NewLogLogger(log.Handler(), slog.LevelWarn),
-		}
-	}
+	newServer := func(h http.Handler) *http.Server { return newHTTPServer(h, log) }
 	srv := newServer(handler)
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -340,11 +328,7 @@ func serve(args []string) error {
 		}
 		pubLn = guard(tcp, handler.Trusted, *maxConns, *maxPerPeer, log)
 		pubSrv = newServer(pubHandler)
-		pubSrv.TLSConfig = m.TLSConfig()
-		pubSrv.TLSConfig.MinVersion = tls.VersionTLS12
-		// Internet scanners cause a steady trickle of TLS handshake errors;
-		// keep those out of the journal unless debugging, but not the rest.
-		pubSrv.ErrorLog = stdlog.New(serverLogWriter{log}, "", 0)
+		configurePublicTLS(pubSrv, m.TLSConfig(), log)
 		pubTLS = true
 		srv.Handler = m.HTTPHandler(handler.PrivateOrRedirect())
 		ln = guard(ln, handler.Trusted, *maxConns, *maxPerPeer, log)
@@ -413,6 +397,37 @@ func stopServing(log *slog.Logger, timeout time.Duration, servers []*http.Server
 	wg.Wait()
 	stopRun()
 	<-done
+}
+
+func newHTTPServer(h http.Handler, log *slog.Logger) *http.Server {
+	return &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		// Covers a sign-in callback, which waits up to 20 s for the
+		// provider's token endpoint.
+		WriteTimeout:   30 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 16 << 10,
+		ErrorLog:       slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	}
+}
+
+// maxStreamsPerConn caps concurrent HTTP/2 requests on one connection to the
+// public :443 listener. The listener's connection limits (--max-public-conns,
+// --max-conns-per-ip) then bound requests too, not just connections; Go's
+// default would allow at least 100 per connection. A page needs four.
+const maxStreamsPerConn = 8
+
+// configurePublicTLS sets srv up to terminate TLS for the internet with
+// tlsCfg (from autocert).
+func configurePublicTLS(srv *http.Server, tlsCfg *tls.Config, log *slog.Logger) {
+	tlsCfg.MinVersion = tls.VersionTLS12
+	srv.TLSConfig = tlsCfg
+	srv.HTTP2 = &http.HTTP2Config{MaxConcurrentStreams: maxStreamsPerConn}
+	// Internet scanners cause a steady trickle of TLS handshake errors;
+	// keep those out of the journal unless debugging, but not the rest.
+	srv.ErrorLog = stdlog.New(serverLogWriter{log}, "", 0)
 }
 
 // publicAddr is where and how the public address is served.
