@@ -122,6 +122,9 @@ func notFunnel(next http.Handler) http.Handler {
 // sourceCheck rejects requests whose peer address is outside the allowed
 // networks (the tailnet by default; the home LAN too when configured). This is
 // the application-level copy of the nftables and systemd IPAddressAllow rules.
+//
+// Localhost peers get only the health check (see Config.AllowedNets), unless
+// Config.DevLocalhost is set.
 func (s *Server) sourceCheck(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip, ok := peerIP(r)
@@ -129,8 +132,18 @@ func (s *Server) sourceCheck(next http.Handler) http.Handler {
 			http.Error(w, s.display+" is not reachable from this network", http.StatusForbidden)
 			return
 		}
+		if ip.IsLoopback() && !s.cfg.DevLocalhost && !isHealthCheck(r) {
+			http.Error(w, "on localhost, "+s.display+" answers only /_/healthz; use it over the tailnet or LAN", http.StatusForbidden)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isHealthCheck reports whether r is the health check, the one request
+// localhost peers may make.
+func isHealthCheck(r *http.Request) bool {
+	return (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.URL.Path == "/_/healthz"
 }
 
 func peerIP(r *http.Request) (netip.Addr, bool) {

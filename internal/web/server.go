@@ -33,7 +33,15 @@ type Config struct {
 	// name used in the UI ("me" → "me/wiki").
 	Hosts []string
 	// AllowedNets are the peer networks allowed to connect (the tailnet).
+	// Localhost peers, even when allowed, get only GET /_/healthz: anything on
+	// the machine that forwards traffic to localhost (a reverse proxy, a raw
+	// TCP forward such as `tailscale funnel --tls-terminated-tcp=443
+	// tcp://localhost:80`) must not hand its clients the no-login handler.
 	AllowedNets []netip.Prefix
+	// DevLocalhost gives allowed localhost peers the whole private handler.
+	// It is for running byname on a development machine (make run), never
+	// on a server.
+	DevLocalhost bool
 	// WriteRate and WriteBurst bound changes per device; WriteDaily caps a
 	// device's changes per 24 h (0 = no daily cap).
 	WriteRate  rate.Limit

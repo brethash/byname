@@ -183,8 +183,12 @@ func serve(args []string) error {
 	slackID := fs.String("slack-client-id", "", "Slack app client ID (enables Sign in with Slack)")
 	slackSecret := fs.String("slack-client-secret-file", "", "file holding the Slack client secret (default: systemd credential byname.slack-client-secret)")
 	slackTeams := fs.String("slack-teams", "", "comma-separated Slack workspace IDs (T0123ABCD) whose members may sign in")
+	dev := fs.Bool("dev", false, "development mode (make run): localhost peers in --allow-cidrs get every page, not just /_/healthz; never on a server")
 	if err := parse(fs, args); err != nil {
 		return err
+	}
+	if *dev && *publicURL != "" {
+		return errors.New("--dev is for running byname on a development machine and can't be combined with --public-url")
 	}
 
 	log, err := newLogger(*logLevel, *logFormat)
@@ -269,6 +273,7 @@ func serve(args []string) error {
 	webCfg := web.Config{
 		Hosts:         hostList,
 		AllowedNets:   nets,
+		DevLocalhost:  *dev,
 		WriteRate:     limit,
 		WriteBurst:    *writeBurst,
 		WriteDaily:    *writeDaily,
@@ -373,7 +378,7 @@ func serve(args []string) error {
 	}
 	log.Info("byname serving", "version", version, "listen", *listen, "hosts", hostList,
 		"allow", *allow, "whois", !*noWhois, "db", *dbPath, "snapshots", *snapDir,
-		"public", *publicURL, "public_listen", *publicListen, "sign_in", names)
+		"public", *publicURL, "public_listen", *publicListen, "sign_in", names, "dev", *dev)
 
 	var serveErr error
 	select {

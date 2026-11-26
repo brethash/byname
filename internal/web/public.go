@@ -151,7 +151,7 @@ func (s *Server) PrivateOrRedirect() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip, ok := peerIP(r)
 		private := ok && s.allowedIP(ip) && strings.TrimSuffix(normalizeHost(r.Host), ".") != s.publicHost
-		if private && ip.IsLoopback() && r.URL.Path != "/_/healthz" {
+		if private && ip.IsLoopback() && !isHealthCheck(r) {
 			private = false
 		}
 		if private {

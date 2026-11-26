@@ -274,3 +274,10 @@ func TestImportCommand(t *testing.T) {
 		}
 	})
 }
+
+func TestDevRefusesPublicAddress(t *testing.T) {
+	err := serve([]string{"--dev", "--public-url", "https://me.example.com", "--hosts", "me", "--db", filepath.Join(t.TempDir(), "x.db")})
+	if err == nil || !strings.Contains(err.Error(), "--dev") {
+		t.Fatalf("serve --dev --public-url: err = %v", err)
+	}
+}

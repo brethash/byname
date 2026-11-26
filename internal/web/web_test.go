@@ -731,3 +731,47 @@ func TestListIsPaged(t *testing.T) {
 		t.Fatal("a one-page result shows a pager")
 	}
 }
+
+// Localhost is often where forwarded traffic arrives from (a reverse proxy, a
+// raw TCP forward of Tailscale Funnel), so even when it is allowed it gets
+// only the health check; development mode trusts it fully.
+func TestLocalhostGetsOnlyTheHealthCheck(t *testing.T) {
+	withLocalhost := func(c *Config) {
+		c.AllowedNets = append(c.AllowedNets, netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128"))
+	}
+	h := newHarness(t, withLocalhost)
+	h.create("wiki", "https://wiki.example.com/")
+	for _, addr := range []string{"127.0.0.1:5000", "127.0.0.2:5000", "[::1]:5000", "[::ffff:127.0.0.1]:5000"} {
+		for _, c := range []struct{ method, path, body string }{
+			{"GET", "/", ""},
+			{"GET", "/wiki", ""},
+			{"GET", "/wiki+", ""},
+			{"GET", "/_/links", ""},
+			{"GET", "/_/export", ""},
+			{"GET", "/_/api/links", ""},
+			{"GET", "/_/healthz/", ""},
+			{"POST", "/_/healthz", ""},
+			{"POST", "/_/links", form("name", "x", "target", "https://x.example/")},
+		} {
+			w := h.do(c.method, c.path, c.body, peer(addr), formBody(), sameOrigin())
+			if w.Code != http.StatusForbidden {
+				t.Errorf("%s %s from %s: status %d, want 403", c.method, c.path, addr, w.Code)
+			}
+		}
+		expectStatus(t, h.do("GET", "/_/healthz", "", peer(addr)), http.StatusOK)
+		expectStatus(t, h.do("HEAD", "/_/healthz", "", peer(addr)), http.StatusOK)
+	}
+	if _, err := h.svc.Store.Get(context.Background(), "x"); err == nil {
+		t.Fatal("localhost created a link")
+	}
+	// The tailnet is unaffected.
+	expectStatus(t, h.do("GET", "/wiki", ""), http.StatusFound)
+
+	dev := newHarness(t, withLocalhost, func(c *Config) { c.DevLocalhost = true })
+	expectStatus(t, dev.do("GET", "/", "", peer("127.0.0.1:5000")), http.StatusOK)
+	expectStatus(t, dev.do("POST", "/_/links", form("name", "x", "target", "https://x.example/"),
+		peer("[::1]:5000"), formBody(), sameOrigin()), http.StatusSeeOther)
+	// Development mode trusts localhost only when it is allowed at all.
+	devNoLocal := newHarness(t, func(c *Config) { c.DevLocalhost = true })
+	expectStatus(t, devNoLocal.do("GET", "/", "", peer("127.0.0.1:5000")), http.StatusForbidden)
+}
