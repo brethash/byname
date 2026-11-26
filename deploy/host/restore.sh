@@ -36,19 +36,25 @@ usage() { echo "usage: sudo byname-restore <snapshot.db | snapshot.db.gz> | --la
 # and the like with root's rights.
 sql() { sqlite3 -safe -cmd 'PRAGMA trusted_schema = OFF;' "$CANDIDATE" "$@"; }
 as_byname() { runuser -u byname -- "$@"; }
-# Read FILE. byname's own files, and any path through a symlink, are read with
-# byname's rights, so a symlink byname planted can't make root read something
-# else. Root reads only plain paths elsewhere (an S3 backup in your home).
+# Read FILE. Root reads it only when the file it opened is FILE as written:
+# outside /var/lib/byname, with no symlink on the way, a regular file. That is
+# checked on the open file, so nothing swapped in after the check counts.
+# byname's own files, and paths through a symlink, are read with byname's
+# rights, so a symlink byname planted can't make root read anything else.
 read_file() {
-  local plain real
+  local plain opened
   plain="$(realpath -s -m -- "$1")" # as written, symlinks not followed
-  real="$(realpath -e -- "$1")"     # where it really is
-  if [[ $plain == /var/lib/byname/* || $real == /var/lib/byname/* || $plain != "$real" ]]; then
-    as_byname cat -- "$1" ||
-      die "can't read $1 as byname (byname's files, and paths through a symlink, are read with byname's rights): copy it to a plain path first"
-  else
-    cat -- "$1"
+  if [[ $plain != /var/lib/byname/* ]]; then
+    {
+      opened="$(readlink /proc/self/fd/3)"
+      if [[ $opened == "$plain" && -f /proc/self/fd/3 ]]; then
+        cat <&3
+        return
+      fi
+    } 3<"$1"
   fi
+  as_byname cat -- "$1" ||
+    die "can't read $1 as byname (byname's files, and paths through a symlink, are read with byname's rights): copy it to a plain path first"
 }
 
 # byname's own snapshots, oldest first (their names sort by time).
