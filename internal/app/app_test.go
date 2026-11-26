@@ -48,6 +48,25 @@ func TestCreateValidates(t *testing.T) {
 	if err != nil || l.Name != "Docs" || l.Target != "https://docs.example.com" || l.Description != "hi" {
 		t.Fatalf("create = %+v, %v", l, err)
 	}
+	for _, d := range []string{"bad \xff", "bell\a"} {
+		_, err = s.Create(ctx, Input{Name: "d", Target: "https://d.example.com", Description: d}, who)
+		if !errors.As(err, &fe) || fe.Field != "description" {
+			t.Fatalf("description %q: err = %v", d, err)
+		}
+	}
+	_, err = s.Create(ctx, Input{Name: "\u212Aelvin", Target: "https://k.example.com"}, who)
+	if !errors.As(err, &fe) || fe.Field != "name" {
+		t.Fatalf("look-alike name: err = %v", err)
+	}
+	// What is stored is exactly what the audit log records.
+	l, err = s.Create(ctx, Input{Name: "multi", Target: "https://m.example.com", Description: "two\nlines"}, who)
+	if err != nil || l.Description != "two lines" {
+		t.Fatalf("create = %+v, %v", l, err)
+	}
+	hist, err := s.Store.History(ctx, l.ID)
+	if err != nil || len(hist) != 1 || *hist[0].After != l.Fields() {
+		t.Fatalf("history = %+v, %v; link %+v", hist, err, l.Fields())
+	}
 }
 
 func TestClickBatching(t *testing.T) {

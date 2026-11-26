@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Limits.
@@ -37,9 +39,13 @@ var (
 	ErrTargetSelf      = errors.New("destination URL points back at this service")
 	ErrTargetTemplate  = errors.New("placeholders like {1} or {*} may only appear after the host name")
 	ErrDescriptionLong = fmt.Errorf("description is longer than %d characters", MaxDescriptionLen)
+	ErrDescriptionText = errors.New("description must be plain text (valid UTF-8, no control characters)")
 )
 
-var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+// nameRE is matched against the name as typed, and lists both cases
+// explicitly: lower-casing first, or (?i), would let Unicode letters that fold
+// to ASCII (U+212A KELVIN SIGN to "k", U+0130 to "i") pass as look-alikes.
+var nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // reservedKeys are lookup keys that can never be link names because the
 // server answers them itself.
@@ -55,7 +61,7 @@ func ParseName(raw string) (string, error) {
 	if name == "" {
 		return "", ErrNameEmpty
 	}
-	if len(name) > MaxNameLen || !nameRE.MatchString(strings.ToLower(name)) {
+	if len(name) > MaxNameLen || !nameRE.MatchString(name) {
 		return "", ErrNameInvalid
 	}
 	if reservedKeys[Key(name)] {
@@ -79,9 +85,29 @@ func Key(name string) string {
 	return b.String()
 }
 
-// ValidateDescription checks a free-text description.
+// ValidateDescription checks a free-text description and returns it
+// trimmed. It must be valid UTF-8 (the audit log stores it as JSON, which
+// would otherwise hold a different string from the link). Tabs and line
+// breaks, which a paste can bring into the one-line field, become spaces;
+// any other control character is refused.
 func ValidateDescription(raw string) (string, error) {
-	d := strings.TrimSpace(raw)
+	if !utf8.ValidString(raw) {
+		return "", ErrDescriptionText
+	}
+	bad := false
+	d := strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t', r == '\n', r == '\r', r == '\v', r == '\f':
+			return ' '
+		case unicode.IsControl(r):
+			bad = true
+		}
+		return r
+	}, raw)
+	if bad {
+		return "", ErrDescriptionText
+	}
+	d = strings.TrimSpace(d)
 	if len(d) > MaxDescriptionLen {
 		return "", ErrDescriptionLong
 	}

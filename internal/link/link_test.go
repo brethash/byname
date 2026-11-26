@@ -35,6 +35,11 @@ func TestParseName(t *testing.T) {
 		"ünï":                   ErrNameInvalid,
 		"<script>":              ErrNameInvalid,
 		strings.Repeat("a", 65): ErrNameInvalid,
+		"\u212Aelvin":           ErrNameInvalid, // KELVIN SIGN, lower-cases to "k"
+		"\u0130stanbul":         ErrNameInvalid, // capital I with dot, lower-cases to "i"
+		"wi\u212Ai":             ErrNameInvalid,
+		"\u017Fite":             ErrNameInvalid, // long s, folds to "s"
+		"wiki\x00":              ErrNameInvalid,
 		"favicon.ico":           ErrNameReserved,
 		"Robots.TXT":            ErrNameReserved,
 		"robots-txt":            ErrNameReserved,
@@ -42,6 +47,36 @@ func TestParseName(t *testing.T) {
 	for in, want := range bad {
 		if _, err := ParseName(in); !errors.Is(err, want) {
 			t.Errorf("ParseName(%q) err = %v; want %v", in, err, want)
+		}
+	}
+}
+
+func TestValidateDescription(t *testing.T) {
+	ok := map[string]string{
+		"":                        "",
+		"  The team wiki  ":       "The team wiki",
+		"Ünïcödé — fine ✓":        "Ünïcödé — fine ✓",
+		"pasted\nacross\r\nlines": "pasted across  lines",
+		"tab\tseparated":          "tab separated",
+	}
+	for in, want := range ok {
+		got, err := ValidateDescription(in)
+		if err != nil || got != want {
+			t.Errorf("ValidateDescription(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	bad := map[string]error{
+		"bad \xff utf-8":                         ErrDescriptionText,
+		"\xc3":                                   ErrDescriptionText,
+		"nul\x00byte":                            ErrDescriptionText,
+		"escape \x1b[31mred":                     ErrDescriptionText,
+		"delete\x7f":                             ErrDescriptionText,
+		"c1 \u0085 control":                      ErrDescriptionText,
+		strings.Repeat("a", MaxDescriptionLen+1): ErrDescriptionLong,
+	}
+	for in, want := range bad {
+		if _, err := ValidateDescription(in); !errors.Is(err, want) {
+			t.Errorf("ValidateDescription(%q) err = %v; want %v", in, err, want)
 		}
 	}
 }
