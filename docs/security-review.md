@@ -270,6 +270,40 @@ Taken from its hardening notes:
   shortens AWS's default-firewall window at creation.
 
 
+## Full review (2026-11-25)
+
+Two independent reviewers read the whole repository: one the Go application,
+one the deployment. No one found a way from the internet to the no-login
+handler, or an open redirect, XSS or CSRF hole. Everything below was fixed in
+three branches (fix-host-scripts, fix-app, fix-cloud-docs), merged together.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| 1 | Critical | `bootstrap.sh` kept the service name in `NAME`, which sourcing `/etc/os-release` overwrote ("Debian GNU/Linux"). Preflight failed on every Debian host, so no real host had ever been bootstrapped. | Renamed the variable; os-release is read in a subshell. A Debian 13 container test (`make host-test`, and CI) now runs bootstrap, every firewall variant through `nft -c`, install and restore. |
+| 2 | High | `byname-restore` took its safety snapshot with the current binary, which fails after a migrating deploy, the case the restore exists for. The documented `$(ls …)` ran as the admin, who can't read `/var/lib/byname`. | The safety copy is a plain file copy made with byname stopped; `--latest` and `--list`; exact snapshot paths printed. |
+| 3 | Medium | An appended path was decoded twice: a literal `%` dropped the whole extra path. | Segments are passed escaped; tests and a stronger fuzz check. |
+| 4 | Medium | Snapshots were written in place, so an interrupted one left a valid-looking empty file that backup uploaded as the newest. | Temp file, fsync, rename and directory fsync. Snapshots are checked (header, page size and count) before backup or restore uses them. |
+| 5 | Medium | `byname.service` always pulled in tailscaled, so a server converted with `--no-tailscale` started Tailscale (and Tailscale SSH) again. | A drop-in adds tailscaled only with Tailscale; it is masked without. |
+| 6 | Medium | The walkthroughs' `scp -r deploy` copied OpenTofu providers, state (with user data) and `terraform.tfvars` to the server. | Only the committed `deploy/host` and `deploy/systemd` are sent (`git archive`). |
+| 7 | Medium | Lightsail SSH rules omitted the address family `ssh_cidrs` didn't list, and an omitted family defaults to the whole internet (provider issue #30286). | Both families are always explicit; an empty one gets a never-routed documentation address. The postcondition stays as a backstop. |
+| 8 | Medium | Replacing a Lightsail server kept its name, so its firewall rules and static IP were never re-applied: the new server had AWS's default firewall. | `replace_triggered_by` on both. A `protect` guard (default on) refuses any replace or destroy until turned off in its own apply. |
+| 9 | Medium | The backup key could overwrite existing S3 objects, and old versions expired after 90 days. | Uploads use `If-None-Match: *`, which the IAM policy requires; noncurrent versions kept 365 days. |
+| 10 | Low | With your own domain, a link to its own address looped. | The public name counts as a self host. |
+| 11 | Low | Localhost was fully trusted on the plain-HTTP port, so a TCP tunnel to localhost:80 would expose the no-login handler. | Localhost gets only `/_/healthz` in every mode; `serve --dev` restores full trust for development and refuses a public URL. |
+| 12 | Low | Other items: clicks lost at shutdown; `sessions revoke ""` signed everyone out; import ignored the link cap and exited 0 on failures; history unbounded; look-alike Unicode in names; control characters in descriptions; cookie cleared on DB errors; HTTP/2 streams uncapped on :443; noisy rejection logs; deletes without a revision check; install rollback gaps; firewall restart gap; a failed `sshd -t` left its drop-in; "last backup: success" when none ran; `grep -q` under `pipefail`. | Each fixed, with tests where code changed. |
+
+Hardening added along the way:
+
+- the firewall drops tailnet source addresses on any interface but `tailscale0`;
+- sshd sets `TrustedUserCAKeys none`, which also turns off Lightsail's browser SSH console;
+- `byname-restore` reads snapshots as the byname user and runs `sqlite3 -safe` with `trusted_schema=OFF`, so a crafted snapshot can't run code as root.
+
+**Not verified yet:**
+
+- **The container test** hasn't run: there was no Docker daemon locally. Its first run is in CI.
+- **The Lightsail placeholder addresses:** it's untested whether Lightsail accepts them. If it refuses, the apply fails and nothing is left open.
+- **Real hardware:** nothing has run on a real Pi or cloud server.
+
 ## Accepted risks
 
 1. **A household member can change any link on purpose.** That is the

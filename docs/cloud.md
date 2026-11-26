@@ -271,6 +271,9 @@ providers and `terraform.tfvars`. Remove that copy:
 **What `bootstrap.sh` does differently on a cloud server:**
 
 - no LAN options;
+- OpenSSH trusts no certificate authority (`TrustedUserCAKeys none`), so only
+  your key logs in. This also turns off Lightsail's browser-based SSH console,
+  which relies on an AWS certificate;
 - with Tailscale, you log in with Tailscale SSH. While it is on, tailscaled
   answers port 22 on the tailnet itself, so OpenSSH is reachable over the
   tailnet only after `sudo tailscale set --ssh=false`;

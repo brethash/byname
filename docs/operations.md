@@ -349,7 +349,7 @@ bin/byname export --db /tmp/drill.db | head -40     # links are there
 | Who changed what | `http://me/_/activity`, or a link's page (`me/name+`) |
 | Undo a bad edit | link page → History → "Restore this version" |
 | Export | `http://me/_/export` or `sudo -u byname /usr/local/lib/byname/current/byname export` |
-| Bulk import | `sudo -u byname /usr/local/lib/byname/current/byname import --hosts me --dry-run file.json` |
+| Bulk import | `sudo -u byname /usr/local/lib/byname/current/byname import --hosts me --dry-run file.json`. All or nothing: any invalid entry fails the import with a non-zero exit. It honours the link cap (`--max-links`, `BYNAME_MAX_LINKS`); with your own domain, add `--public-url https://…` so links back to it are refused |
 | Change settings | edit `/etc/byname/byname.local.env` (yours; `byname.env` is managed), then `sudo systemctl restart byname` |
 | Turn LAN access on/off | re-run `bootstrap.sh` with or without `--lan-access` |
 | Turn the public address on/off | re-run `bootstrap.sh` with or without `--public-domain` or `--funnel` ([public-access.md](public-access.md)) |
@@ -370,7 +370,7 @@ The host reboots at 04:00 when an update needs it.
 | "unknown host" (421) | A name other than those in `BYNAME_HOSTS` (e.g. `me.home` when you passed `--lan-domain lan`); re-run bootstrap with the right `--lan-domain`, or add it via `BYNAME_HOSTS` in `/etc/byname/byname.local.env` |
 | "cross-origin request blocked" (403) | A page on another site tried to change a link. That's working as designed. If it was you, use the byname UI itself |
 | `/_/whoami` shows no Tailscale user | WhoIs failed; `journalctl -u byname \| grep whois`; check `/var/run/tailscale/tailscaled.sock` exists |
-| Locked out of SSH | Tailscale SSH (`ssh <you>@me`) bypasses the LAN rule. Otherwise, on a Pi use a keyboard and HDMI, then `sudo systemctl stop byname-firewall`. A cloud server has no console login: build a new one ([cloud.md](cloud.md)) and restore the newest S3 backup (see Restore) |
+| Locked out of SSH | Tailscale SSH (`ssh <you>@me`) bypasses the LAN rule. Otherwise, on a Pi use a keyboard and HDMI, then `sudo systemctl stop byname-firewall`. A cloud server without Tailscale takes OpenSSH from `ssh_cidrs`: if your address changed, update `ssh_cidrs` and run `tofu apply`. Otherwise it has no console login: build a new one ([cloud.md](cloud.md)) and restore the newest S3 backup (see Restore) |
 | Deploy rolled back | Read the journal lines it printed; `ssh <you>@me journalctl -u byname -n 50` |
 | Deploy rolled back, and the rollback failed too | The release changed the database schema, which the previous version refuses: run the `sudo byname-restore …` command the deploy printed (see Deploying changes) |
 | `byname-restore` says it can't read a file as byname | It reads byname's own files, and any path through a symlink, with byname's rights. Copy the file to a plain path (your home) and restore from there |
@@ -381,7 +381,7 @@ Only tailnet devices, plus home-LAN devices when `--lan-access` is on, can
 reach byname's plain-HTTP address: nftables, systemd `IPAddressAllow` and the app
 itself each check that. (The optional public address is separate: Tailscale
 Funnel delivers it over a private socket, and everyone outside the tailnet
-must sign in with Google or Slack; see [public-access.md](public-access.md).) Anyone who can reach it may create or edit links; there are no logins.
+must sign in with Google or Slack; see [public-access.md](public-access.md).) Anyone who can reach the plain-HTTP address may create or edit links; there are no logins there.
 Each change is recorded in an audit log that the database refuses to rewrite,
 with the person's Tailscale identity, or just the IP address for LAN devices
 without Tailscale. Any earlier version can be restored with one click.

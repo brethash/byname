@@ -306,7 +306,7 @@ fi
 if [[ "$PLATFORM" == pi ]]; then
   step "OpenSSH (break-glass: key-only, LAN-only via firewall)"
 elif [[ $TAILSCALE -eq 1 ]]; then
-  step "OpenSSH (fallback to Tailscale SSH: key-only, tailnet-only via firewall)"
+  step "OpenSSH (key-only, tailnet-only via firewall; Tailscale SSH answers port 22 while it's on)"
 else
   step "OpenSSH (key-only; reachable as --ssh-from says)"
 fi

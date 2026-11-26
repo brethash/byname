@@ -173,10 +173,11 @@ Needs Go 1.25 or later and shellcheck; OpenTofu and the AWS CLI for cloud
 deployments.
 
 ```sh
-make run          # http://localhost:8080 in dev mode
+make run          # http://localhost:8080 in dev mode (serve --dev: localhost fully trusted)
 make gate         # vet, staticcheck, race tests, govulncheck, shellcheck
 make fuzz         # fuzz URL validation and template expansion
-make cloud-check  # tofu fmt + validate for both cloud stacks
+make cloud-check  # tofu fmt, validate and offline tests for both cloud stacks
+make host-test    # bootstrap, firewall, install and restore in a Debian 13 container (needs Docker)
 ```
 
 ```

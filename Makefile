@@ -59,19 +59,21 @@ build-amd64:
 
 run: build
 	@mkdir -p tmp
-	bin/byname serve --listen 127.0.0.1:8080 --hosts localhost:8080 \
+	bin/byname serve --dev --listen 127.0.0.1:8080 --hosts localhost:8080 \
 		--allow-cidrs 127.0.0.0/8,::1/128 --no-whois \
 		--db tmp/dev.db --snapshot-dir tmp/snapshots --throttled-path "" --log-level debug
 
 deploy: gate build-linux
 	deploy/deploy.sh $(TARGET) $(VERSION)
 
-# Needs OpenTofu; `init` downloads the providers but touches no account.
+# Needs OpenTofu; `init` downloads the providers but touches no account, and
+# the tests use mock providers.
 cloud-check:
 	tofu fmt -check -recursive deploy/cloud
 	for d in aws hetzner; do \
 		tofu -chdir=deploy/cloud/$$d init -backend=false -input=false >/dev/null && \
-		tofu -chdir=deploy/cloud/$$d validate || exit 1; \
+		tofu -chdir=deploy/cloud/$$d validate && \
+		tofu -chdir=deploy/cloud/$$d test || exit 1; \
 	done
 
 # Debian 13 smoke test of deploy/host and deploy/systemd: bootstrap.sh for every
