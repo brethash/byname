@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"byname/internal/app"
+	"byname/internal/store"
 )
 
 // Uploader puts an object. *S3Uploader implements it; tests use a fake.
@@ -55,7 +56,13 @@ func Run(ctx context.Context, up Uploader, opt Options) (Result, error) {
 		res.Skipped = true
 		return res, nil
 	}
-	body, err := gzipFile(filepath.Join(opt.SnapshotDir, newest))
+	// Never upload (and record as done) an empty or partial file: the restore
+	// instructions pick the newest object in the bucket.
+	p := filepath.Join(opt.SnapshotDir, newest)
+	if err := store.CheckSnapshot(p); err != nil {
+		return res, fmt.Errorf("refusing to upload the newest snapshot: %w", err)
+	}
+	body, err := gzipFile(p)
 	if err != nil {
 		return res, err
 	}

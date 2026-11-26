@@ -312,7 +312,10 @@ func ListSnapshots(dir string) ([]string, error) {
 	return out, nil
 }
 
-// PruneSnapshots deletes all but the newest keep snapshots in dir.
+// PruneSnapshots deletes all but the newest keep snapshots in dir, and
+// temporary files that interrupted snapshots left behind. A temporary file is
+// only removed once it is an hour old, so a snapshot that another process
+// (byname snapshot, a deploy) is writing at this moment is left alone.
 func PruneSnapshots(dir string, keep int) error {
 	names, err := ListSnapshots(dir)
 	if err != nil {
@@ -324,10 +327,40 @@ func PruneSnapshots(dir string, keep int) error {
 		}
 		names = names[1:]
 	}
+	return removeStaleTemps(dir, time.Now().Add(-time.Hour))
+}
+
+func removeStaleTemps(dir string, before time.Time) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if !e.Type().IsRegular() || !strings.HasPrefix(n, "."+snapPrefix) || !strings.HasSuffix(n, snapSuffix+".tmp") {
+			continue
+		}
+		if fi, err := e.Info(); err == nil && fi.ModTime().Before(before) {
+			if err := os.Remove(filepath.Join(dir, n)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
+// hasSnapshot reports whether dir already holds a good snapshot. Only the
+// newest counts: if it is empty or partial (written in place by an older
+// version and interrupted), a fresh one is taken at startup.
 func (s *Service) hasSnapshot() bool {
 	names, err := ListSnapshots(s.cfg.SnapshotDir)
-	return err == nil && len(names) > 0
+	if err != nil || len(names) == 0 {
+		return false
+	}
+	newest := filepath.Join(s.cfg.SnapshotDir, names[len(names)-1])
+	if err := store.CheckSnapshot(newest); err != nil {
+		s.log.Warn("newest snapshot is unusable; taking a new one", "err", err)
+		return false
+	}
+	return true
 }

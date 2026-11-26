@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -233,6 +234,103 @@ func TestSnapshotAndReopen(t *testing.T) {
 	}
 	if v, _ := s2.SchemaVersion(ctx); v != 2 {
 		t.Fatalf("schema version = %d", v)
+	}
+	if err := CheckSnapshot(dest); err != nil {
+		t.Fatalf("CheckSnapshot(good snapshot) = %v", err)
+	}
+	if _, err := os.Stat(SnapshotTempName(dest)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary file left behind: %v", err)
+	}
+}
+
+// An interrupted snapshot must never leave a file under the final name, nor
+// its temporary file.
+func TestSnapshotInterrupted(t *testing.T) {
+	s := openTest(t)
+	mustCreate(t, s, "keep", "https://keep.example.com")
+	dir := t.TempDir()
+	noFiles := func(t *testing.T) {
+		t.Helper()
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			t.Errorf("left behind: %s", e.Name())
+		}
+	}
+
+	t.Run("failure before rename", func(t *testing.T) {
+		beforeSnapshotRename = func(string) error { return errors.New("power cut") }
+		t.Cleanup(func() { beforeSnapshotRename = nil })
+		if err := s.Snapshot(ctx, filepath.Join(dir, "a.db")); err == nil {
+			t.Fatal("snapshot succeeded")
+		}
+		noFiles(t)
+	})
+	t.Run("partial write", func(t *testing.T) {
+		beforeSnapshotRename = func(tmp string) error { return os.Truncate(tmp, 1000) }
+		t.Cleanup(func() { beforeSnapshotRename = nil })
+		if err := s.Snapshot(ctx, filepath.Join(dir, "b.db")); !errors.Is(err, ErrBadSnapshot) {
+			t.Fatalf("snapshot of a truncated copy: err = %v, want ErrBadSnapshot", err)
+		}
+		noFiles(t)
+	})
+	t.Run("cancelled", func(t *testing.T) {
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		if err := s.Snapshot(cctx, filepath.Join(dir, "c.db")); err == nil {
+			t.Fatal("snapshot succeeded with a cancelled context")
+		}
+		noFiles(t)
+	})
+	t.Run("leftover temporary file", func(t *testing.T) {
+		dest := filepath.Join(dir, "d.db")
+		if err := os.WriteFile(SnapshotTempName(dest), []byte("partial"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Snapshot(ctx, dest); err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckSnapshot(dest); err != nil {
+			t.Fatal(err)
+		}
+		os.Remove(dest)
+		noFiles(t)
+	})
+}
+
+func TestCheckSnapshot(t *testing.T) {
+	s := openTest(t)
+	mustCreate(t, s, "keep", "https://keep.example.com")
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.db")
+	if err := s.Snapshot(ctx, good); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := map[string][]byte{
+		"empty":         nil,
+		"text":          []byte("not a database at all, but long enough to have a header-sized prefix........................................"),
+		"header only":   body[:100],
+		"truncated":     body[:len(body)-1],
+		"one page less": body[:len(body)-4096],
+		"extra bytes":   append(append([]byte{}, body...), 0),
+	}
+	for name, b := range bad {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckSnapshot(p); !errors.Is(err, ErrBadSnapshot) {
+			t.Errorf("%s: CheckSnapshot = %v, want ErrBadSnapshot", name, err)
+		}
+	}
+	if err := CheckSnapshot(dir); !errors.Is(err, ErrBadSnapshot) {
+		t.Errorf("directory: CheckSnapshot = %v, want ErrBadSnapshot", err)
+	}
+	if err := CheckSnapshot(filepath.Join(dir, "missing")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("missing: CheckSnapshot = %v", err)
 	}
 }
 
