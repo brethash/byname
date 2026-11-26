@@ -121,6 +121,94 @@ should say "home network (no Tailscale)", and `me/test` should open.
 Record what happens in [client-setup.md](client-setup.md). If you have a
 guest Wi-Fi, from it `curl -m 5 http://<pi-lan-ip>/` should time out.
 
+### 8. Optional: sign-in from the internet
+
+Everything above serves the tailnet and the home network, with no sign-in.
+To let people anywhere use it, the Pi can publish a public address with
+Google or Slack sign-in, exactly as a cloud server does
+([cloud.md](cloud.md#your-own-domain-no-tailscale-walkthrough) is the
+reference walkthrough, and [public-access.md](public-access.md) has the
+details). Sign-in applies only to requests that arrive on the public
+address. Tailnet devices, and LAN devices with `--lan-access`, keep using
+plain HTTP with no sign-in.
+
+There are two ways. Pick one:
+
+| | `--public-domain` | `--funnel` |
+|---|---|---|
+| Address | `https://me.example.com/wiki` | `https://me.<tailnet>.ts.net/wiki` |
+| Needs | a domain, and TCP 80 and 443 forwarded from your router | Tailscale, with Funnel enabled |
+| Doesn't work | behind carrier-grade NAT | never blocked by your router or ISP |
+
+**Which one?** Compare the WAN address your router shows with
+`curl -s https://checkip.amazonaws.com` from home. If they differ, or the
+router's address starts `100.64`–`100.127`, your ISP uses carrier-grade NAT
+and port-forwarding can't work: use `--funnel`. Some ISPs also block inbound
+80 or 443 on home connections; the same applies.
+
+**Before you start** (for `--public-domain`):
+
+- Reserve the Pi's address in your router (step 3), then forward **TCP 80 and
+  443**, and only those, to it. Never forward 22: SSH on the Pi is for the
+  home network and the tailnet.
+- Your home IP address probably changes now and then. Use a short TTL (5
+  minutes) on the DNS record and keep it up to date with your DNS host's
+  dynamic-DNS update, or your router's. byname gets and renews its
+  certificate only while the name points at your home. If you'd rather not
+  keep a record updated, use `--funnel`.
+- Add an `AAAA` record only if your router lets IPv6 in to the Pi.
+- A Slack or Google app, with the redirect URL for your public address
+  ([public-access.md](public-access.md#2-sign-in-providers)).
+
+**Turn it on.** `SERVER` is the Pi's tailnet name or LAN address. Use the
+same flags you used in step 4 (or 5) throughout.
+
+```sh
+# 1. Sign-in settings and secrets (the Pi is already bootstrapped):
+ssh <you>@SERVER 'sudo tee -a /etc/byname/byname.local.env' <<'EOF'
+BYNAME_SLACK_CLIENT_ID=1234567890.1234567890
+BYNAME_SLACK_TEAMS=T0123ABCD
+EOF
+pbpaste | ssh <you>@SERVER 'sudo sh -c "umask 077; cat > /etc/credstore/byname.slack-client-secret"'
+
+# 2. Turn on the public address: add one flag to your step 4/5 command
+ssh <you>@SERVER 'sudo ./deploy/host/bootstrap.sh --admin-user <you> --lan-subnet 192.168.1.0/24 --lan-access --lan-domain lan \
+  --public-domain me.example.com'          # or: --funnel
+
+# 3. Check
+ssh <you>@SERVER sudo byname-verify
+```
+
+For Google, use `BYNAME_GOOGLE_CLIENT_ID` and `BYNAME_GOOGLE_ALLOW`, and the
+`byname.google-client-secret` file. Without `--lan-access`, leave out that
+flag and `--lan-domain`. Bootstrap refuses to open the address until
+sign-in is configured. Running it again without the flag turns the public
+address off.
+
+`byname-verify` adds a **Public address** section: DNS, the firewall, a real
+certificate, the sign-in redirect, and that the secrets are in place. Then
+check from a phone on mobile data (Wi-Fi and Tailscale off), as in
+[public-access.md](public-access.md#4-turn-it-on): `https://<address>/_/whoami`
+must ask you to sign in, and refuse an account that isn't allowed.
+
+**Things specific to a Pi at home**
+
+- **LAN access next to a public domain.** If your router rewrites the source
+  address of forwarded connections (it makes them look like they come from
+  the router itself), internet clients would look like LAN devices on port
+  80 and could skip sign-in. Don't combine `--lan-access` with
+  `--public-domain` unless
+  `curl -m 5 -i -H 'Host: me' http://me.example.com/_/whoami`, run from
+  mobile data, answers with a redirect to https and not the "home network
+  (no Tailscale)" page. `byname-verify` lists this check. If in doubt,
+  leave `--lan-access` off, or use `--funnel`, which has no open ports.
+- **The public address from inside your home.** Some routers can't loop a
+  request for your own public IP back inside the network. If
+  `https://me.example.com` fails on home Wi-Fi but works on mobile data, use
+  `me/wiki` at home (Tailscale or `--lan-access`).
+- **Deploys and SSH** still go to the Pi's LAN address or its tailnet name,
+  never the public domain.
+
 ## Deploying changes
 
 ```sh

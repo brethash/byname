@@ -14,12 +14,14 @@ People reach byname in up to three ways, and you choose which ones are on.
 
 | Path | Address people use | Sign-in |
 |---|---|---|
-| **Your own domain** | `https://me.example.com/wiki`, from any browser anywhere | Slack or Google; only accounts on your allow list |
+| **Your own domain** (cloud server or Pi) | `https://me.example.com/wiki`, from any browser anywhere | Slack or Google; only accounts on your allow list |
 | **Your tailnet** (Tailscale) | `me/wiki` on devices running Tailscale | none: Tailscale identifies each person and device |
 | **Your home network** (Pi only) | `me/wiki` on home Wi-Fi | none; changes are recorded by IP address |
 
 Tailscale is optional. With your own domain and Slack sign-in, a server needs
-nothing else.
+nothing else. A Pi can use the same sign-in as a cloud server: forward ports
+80 and 443 from your router (`--public-domain`), or use Tailscale Funnel
+(`--funnel`) and open no ports at all.
 
 `me` is the default prefix people type. Choose your own with one setting:
 `--name hg` makes it `hg/wiki`.
@@ -78,7 +80,7 @@ nothing else.
 |---|---|---|
 | AWS Lightsail with your own domain | $5.00 | a team or family anywhere, with Slack or Google sign-in; no Tailscale needed |
 | AWS Lightsail, Tailscale only | $3.50 | a household that already uses Tailscale |
-| Raspberry Pi 3B at home | about $0.30 of electricity | Tailscale devices plus, optionally, everything on the home network |
+| Raspberry Pi 3B at home | about $0.30 of electricity | Tailscale devices plus, optionally, everything on the home network. Add Slack or Google sign-in for the internet with `--public-domain` (router port-forwarding) or `--funnel` (no open ports) |
 | Hetzner Cloud | €5.99 and up | either cloud setup, if you'd rather not use AWS |
 
 Prices as of 2026-11-24. The cloud servers are created with OpenTofu from
@@ -92,7 +94,8 @@ Every deployment follows the same five steps.
 1. **Create the server.** For the cloud, run `tofu apply` in
    `deploy/cloud/aws` (or `hetzner`). For a Pi, flash Raspberry Pi OS Lite.
 2. **Point a name at it.** For your own domain, add an A and an AAAA record
-   at your DNS host (`tofu output dns_records` prints them). With Tailscale,
+   at your DNS host (`tofu output dns_records` prints them). For a Pi, point
+   an A record at your home's public IP and forward ports 80 and 443. With Tailscale,
    the server joins your tailnet as `me`.
 3. **Harden it.** Run `deploy/host/bootstrap.sh` on the server. It sets up a
    default-deny firewall, key-only SSH, automatic updates and the systemd
@@ -123,13 +126,16 @@ ssh admin@me.example.com sudo byname-verify
 
 Updates are one command: `make deploy TARGET=…` from `master`.
 
+On a Pi, SSH answers only the home network (or the tailnet), so deploy from
+home or over Tailscale: `make deploy TARGET=you@me`, not the public domain.
+
 ### Guides
 
 | Guide | Covers |
 |---|---|
 | [docs/cloud.md](docs/cloud.md) | AWS Lightsail and Hetzner: costs, a step-by-step walkthrough with your own domain, the Tailscale variant, moving between hosts |
-| [docs/public-access.md](docs/public-access.md) | your own domain or Tailscale Funnel; setting up Slack and Google sign-in; managing who can sign in |
-| [docs/operations.md](docs/operations.md) | the Raspberry Pi from scratch, deploys and rollback, S3 backups and restores, troubleshooting |
+| [docs/public-access.md](docs/public-access.md) | your own domain or Tailscale Funnel, on a cloud server or a Pi; setting up Slack and Google sign-in; managing who can sign in |
+| [docs/operations.md](docs/operations.md) | the Raspberry Pi from scratch, including [sign-in from the internet](docs/operations.md#8-optional-sign-in-from-the-internet); deploys and rollback, S3 backups and restores, troubleshooting |
 | [docs/client-setup.md](docs/client-setup.md) | making `me/wiki` work in each browser and device |
 | [docs/security-review.md](docs/security-review.md) | the security reviews: what was found, what was fixed, which risks are accepted |
 

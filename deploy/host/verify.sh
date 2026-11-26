@@ -187,7 +187,7 @@ if [[ -n "$PUBLIC_URL" ]]; then
   if [[ -n "$PUBLIC_DOMAIN" ]]; then
     # Served directly: DNS, the firewall, a real certificate, and byname's gate.
     resolved="$(getent ahosts "$PUBLIC_DOMAIN" | awk '{print $1}' | sort -u | paste -sd' ' -)"
-    [[ -n "$resolved" ]] && pass "$PUBLIC_DOMAIN resolves to $resolved" || fail "$PUBLIC_DOMAIN doesn't resolve: create its A/AAAA records (tofu output dns_records)"
+    [[ -n "$resolved" ]] && pass "$PUBLIC_DOMAIN resolves to $resolved" || fail "$PUBLIC_DOMAIN doesn't resolve: $([[ "$PLATFORM" == pi ]] && echo "point its A record at your home's public IP address (dynamic DNS if that changes)" || echo "create its A/AAAA records (tofu output dns_records)")"
     nft list chain inet byname_filter input 2>/dev/null | grep -q 'tcp dport { 80, 443 } accept' && pass "firewall open for tcp/80 and tcp/443" || fail "firewall doesn't open tcp/80 and tcp/443 (re-run bootstrap.sh --public-domain)"
     [[ "${serve[0]:-0}" == 1 ]] && fail "Tailscale Funnel is on as well; turn it off: tailscale funnel reset"
     # Through the real TLS listener, with certificate checks. The first
@@ -198,14 +198,40 @@ if [[ -n "$PUBLIC_URL" ]]; then
     else
       fail "https://$PUBLIC_DOMAIN: '$out' (want 303 to /_/signin; certificate problems usually mean DNS doesn't point here yet: journalctl -u byname | grep -i acme)"
     fi
-    # Port 80 from an address the private listener doesn't trust (this
-    # host's own public address) must only redirect.
-    own="$(ip -o addr show scope global | awk '$2 !~ /^tailscale/ {print $4}' | cut -d/ -f1 | head -1)"
+    # Port 80 from a peer the private listener doesn't trust must only
+    # redirect. Use this host's own address if it isn't trusted. On a Pi with
+    # --lan-access, or with Tailscale, the LAN and tailnet addresses are
+    # trusted (they'd get the private page), so use 127.0.0.2: loopback, but
+    # not the one localhost address byname allows.
+    own="$(ip -o addr show scope global | awk '$2 !~ /^tailscale/ {print $4}' | cut -d/ -f1 | python3 -c '
+import ipaddress, sys
+nets = [ipaddress.ip_network(n) for n in sys.argv[1].split(",") if n]
+for line in sys.stdin:
+    a = line.strip()
+    if not a:
+        continue
+    ip = ipaddress.ip_address(a)
+    if not any(ip in n for n in nets if n.version == ip.version):
+        print(a)
+        break
+' "$ALLOW_CIDRS")"
+    probe=(); probe_from="from $own"
     if [[ -n "$own" ]]; then
       [[ "$own" == *:* ]] && own="[$own]"
-      out="$(curl -s -o /dev/null -m 5 -w '%{http_code} %{redirect_url}' -H "Host: $FIRST_HOST" "http://$own/_/new")"
-      [[ "$out" == "301 https://$PUBLIC_DOMAIN/_/new" ]] && pass "port 80 only redirects untrusted peers to https" ||
-        fail "port 80 from $own got '$out', want 301 to https://$PUBLIC_DOMAIN/_/new (check BYNAME_ALLOW_CIDRS)"
+    else
+      own=127.0.0.1; probe=(--interface 127.0.0.2); probe_from="from 127.0.0.2 (every address of this host is trusted)"
+    fi
+    out="$(curl -s -o /dev/null -m 5 -w '%{http_code} %{redirect_url}' "${probe[@]}" -H "Host: $FIRST_HOST" "http://$own/_/new")"
+    [[ "$out" == "301 https://$PUBLIC_DOMAIN/_/new" ]] && pass "port 80 only redirects untrusted peers to https" ||
+      fail "port 80 $probe_from got '$out', want 301 to https://$PUBLIC_DOMAIN/_/new (check BYNAME_ALLOW_CIDRS)"
+    if [[ "$LAN_MODE" == on ]]; then
+      # A trusted LAN peer gets the private page, except on the public name.
+      lan_ip="$(ip -4 -o addr show scope global | awk '$2 !~ /^tailscale/ {print $4}' | cut -d/ -f1 | head -1)"
+      if [[ -n "$lan_ip" ]]; then
+        out="$(curl -s -o /dev/null -m 5 -w '%{http_code} %{redirect_url}' -H "Host: $PUBLIC_DOMAIN" "http://$lan_ip/_/new")"
+        [[ "$out" == "301 https://$PUBLIC_DOMAIN/_/new" ]] && pass "LAN peers on the public name are redirected to https" ||
+          fail "LAN address $lan_ip with Host $PUBLIC_DOMAIN got '$out', want 301 to https://$PUBLIC_DOMAIN/_/new"
+      fi
     fi
     days="$(echo | openssl s_client -connect 127.0.0.1:443 -servername "$PUBLIC_DOMAIN" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | sed 's/notAfter=//')"
     [[ -n "$days" ]] && pass "certificate valid until $days (byname renews it automatically)"
@@ -284,9 +310,27 @@ fi
 if [[ -n "$PUBLIC_DOMAIN" ]]; then
   cat <<EOF
   * http://$PUBLIC_DOMAIN/wiki must redirect to https://$PUBLIC_DOMAIN/wiki.
+EOF
+  if [[ "$PLATFORM" == pi ]]; then
+    cat <<EOF
+  * Your router must forward only tcp/80 and tcp/443 to this Pi. From outside your home
+    network (phone on mobile data), nc -vz -w 5 $PUBLIC_DOMAIN 22  must time out.
+EOF
+  else
+    cat <<EOF
   * From the internet, only tcp/80 and tcp/443 should answer (plus tcp/22 from your
     --ssh-from addresses only): from elsewhere,  nc -vz -w 5 $PUBLIC_DOMAIN 22  must time out.
 EOF
+  fi
+  if [[ "$PLATFORM" == pi && "$LAN_MODE" == on ]]; then
+    cat <<EOF
+  * LAN access is ON next to a public domain. From outside your home network, this must
+    redirect to https, never show the "home network (no Tailscale)" page. If it shows that
+    page, your router rewrites the source address of forwarded connections: turn LAN access
+    off (re-run bootstrap.sh without --lan-access).
+        curl -m 5 -i -H 'Host: $FIRST_HOST' http://$PUBLIC_DOMAIN/_/whoami
+EOF
+  fi
 elif [[ "$PLATFORM" == cloud ]]; then
   pub6="$(ip -6 -o addr show scope global | awk '$2 != "tailscale0" {print $4}' | cut -d/ -f1 | head -1)"
   pub4="$(ip -4 -o addr show scope global | awk '$2 != "tailscale0" {print $4}' | cut -d/ -f1 | head -1)"
@@ -297,7 +341,8 @@ EOF
   if [[ -n "$pub4" ]]; then
     echo "        curl -m 5 http://$pub4/   (private address $pub4; check the provider's public IPv4 too)"
   fi
-else
+fi
+if [[ "$PLATFORM" == pi ]]; then
   lan_ip="$(ip -4 -o addr show scope global | awk '$2 != "tailscale0" {print $4}' | cut -d/ -f1 | head -1)"
   if [[ "$LAN_MODE" == on ]]; then
     cat <<EOF

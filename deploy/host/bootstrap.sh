@@ -13,7 +13,9 @@
 #
 # Public access, with Google or Slack sign-in (docs/public-access.md):
 # --public-domain serves your own domain directly; --funnel publishes the
-# tailnet name through Tailscale Funnel.
+# tailnet name through Tailscale Funnel. Both work on a Pi as well as in the
+# cloud (a Pi also needs TCP 80 and 443 forwarded from the router for
+# --public-domain).
 #
 # Safe to re-run: every step checks before it changes anything, and each run
 # applies exactly the flags given (leave one out to turn it off). On a Pi it
@@ -62,8 +64,10 @@ Public access (Google or Slack sign-in must be set up first: docs/public-access.
   --public-domain   serve your own domain, e.g. me.example.com, over HTTPS with a Let's
                     Encrypt certificate. Opens TCP 80 and 443; its DNS must point here.
                     Everyone reaching it signs in (tailnet devices can still use NAME/).
+                    On a Pi, also forward TCP 80 and 443 from your router to the Pi.
   --funnel          publish https://NAME.<tailnet>.ts.net through Tailscale Funnel instead:
-                    no open ports; tailnet devices skip sign-in, everyone else signs in
+                    no open ports; tailnet devices skip sign-in, everyone else signs in.
+                    On a Pi it needs no router changes (works behind carrier-grade NAT).
 
 Raspberry Pi only:
   --lan-subnet      your home LAN, e.g. 192.168.1.0/24 (break-glass SSH is allowed from here)
@@ -646,6 +650,9 @@ fi
 [[ $REBOOT_NEEDED -eq 1 ]] && echo "    * Reboot to apply config.txt changes: sudo reboot"
 if [[ $TAILSCALE -eq 1 ]]; then
   echo "    * Deploy from your Mac:  make deploy TARGET=$ADMIN_USER@$NAME"
+elif [[ "$PLATFORM" == pi ]]; then
+  # OpenSSH on a Pi answers the LAN only, never the public domain.
+  echo "    * Deploy from your Mac (on the home network):  make deploy TARGET=$ADMIN_USER@${LAN_IP:-PI-LAN-ADDRESS}"
 else
   echo "    * Deploy from your Mac:  make deploy TARGET=$ADMIN_USER@${PUBLIC_DOMAIN:-SERVER-ADDRESS}"
 fi

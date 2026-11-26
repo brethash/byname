@@ -240,6 +240,7 @@ Nothing else is open: no Tailscale port without Tailscale.
 | No WhoIs and no tailnet: every user is identified by their Google or Slack account | That's the point of this mode. |
 | Certificates depend on DNS pointing at the server | If DNS is wrong, HTTPS fails closed (no certificate); nothing falls back to plain HTTP. While DNS is wrong, anyone probing the name can make byname retry and use up Let's Encrypt's 5 failed validations an hour, which only delays your own certificate. Set DNS first. |
 | On a Pi, a router that rewrites the source address of forwarded connections would make internet clients look like LAN peers on port 80 | Documented: don't combine `--lan-access` with `--public-domain` behind such a router. |
+| A Pi's home IP address and router sit behind the public address | Only TCP 80 and 443 are forwarded, to the Pi, which has the same default-deny firewall and sandbox as a cloud server. SSH stays LAN- and tailnet-only (`--ssh-from any` is refused on a Pi). Behind carrier-grade NAT, or to open no ports, use `--funnel`. |
 | byname behind someone else's proxy | Not supported: in direct mode byname must be the one terminating TLS, and it trusts no forwarding headers. |
 
 **Independent review (same day).** A reviewer working from the code found no

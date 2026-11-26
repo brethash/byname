@@ -34,6 +34,9 @@ Either way:
 
 ## Costs and requirements
 
+- **A Pi** can do either. A domain needs a public (not carrier-grade-NAT)
+  home IPv4 address and ports 80 and 443 forwarded; behind carrier-grade NAT,
+  use Funnel.
 - **Your own domain**: no extra cost beyond the domain. The server needs a
   public IPv4 address, because most of the internet still reaches websites
   over IPv4. On Lightsail that means `ipv4 = true`: $5.00 instead of $3.50 a
@@ -51,10 +54,13 @@ Either way:
 ### Your own domain
 
 1. Create the server with `public_domain` set (deploy/cloud, see
-   [cloud.md](cloud.md)), or have a Pi you can port-forward 80 and 443 to.
+   [cloud.md](cloud.md)), or have a Pi you can port-forward TCP 80 and 443
+   to ([operations.md, step 8](operations.md#8-optional-sign-in-from-the-internet)).
 2. At your DNS host, point the name at the server: an `A` record for its
    IPv4 address and an `AAAA` record for its IPv6 address. `tofu output
-   dns_records` prints both. Use a short TTL (5 minutes) at first.
+   dns_records` prints both. For a Pi, the `A` record holds your home's
+   public IP (keep it current with dynamic DNS; an `AAAA` record only if
+   your router lets IPv6 in). Use a short TTL (5 minutes) at first.
 3. Wait until `dig +short me.example.com` returns those addresses. byname asks
    Let's Encrypt for a certificate on the first HTTPS visit. Let's Encrypt
    checks that the name points at this server, through port 80 or 443.
@@ -176,6 +182,10 @@ ssh admin@SERVER 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name hg \
   --no-tailscale --ssh-from any --public-domain me.example.com'
 # or Tailscale Funnel:
 ssh admin@me 'sudo ./deploy/host/bootstrap.sh --admin-user admin --name me --funnel'
+
+# a Pi: your usual flags, plus either --public-domain or --funnel
+ssh you@me 'sudo ./deploy/host/bootstrap.sh --admin-user you --lan-subnet 192.168.1.0/24 \
+  --public-domain me.example.com'
 
 ssh admin@SERVER sudo byname-verify
 ```
