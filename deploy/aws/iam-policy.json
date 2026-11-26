@@ -2,12 +2,22 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "PutOtBackupsOnly",
+      "Sid": "PutNewBynameBackupsOnly",
       "Effect": "Allow",
       "Action": "s3:PutObject",
       "Resource": "arn:aws:s3:::BUCKET_NAME/byname/*",
       "Condition": {
-        "StringEquals": { "s3:x-amz-server-side-encryption": "AES256" }
+        "StringEquals": { "s3:x-amz-server-side-encryption": "AES256" },
+        "Null": { "s3:if-none-match": "false" }
+      }
+    },
+    {
+      "Sid": "DenyPutsThatCouldOverwrite",
+      "Effect": "Deny",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::BUCKET_NAME/*",
+      "Condition": {
+        "Null": { "s3:if-none-match": "true" }
       }
     }
   ]

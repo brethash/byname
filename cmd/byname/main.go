@@ -569,9 +569,12 @@ func runBackup(args []string) error {
 	if err != nil {
 		return err
 	}
-	if res.Skipped {
+	switch {
+	case res.Existed:
+		fmt.Printf("up to date: %s is already in s3://%s/\n", res.Snapshot, *bucket)
+	case res.Skipped:
 		fmt.Printf("up to date: %s already uploaded\n", res.Snapshot)
-	} else {
+	default:
 		fmt.Printf("uploaded %s to s3://%s/%s (%d bytes)\n", res.Snapshot, *bucket, res.Key, res.Bytes)
 	}
 	return nil

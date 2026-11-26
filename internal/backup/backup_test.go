@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ func fakeDB(marker string) []byte {
 	return b
 }
 
+// fakeUploader is write-once, like the bucket.
 type fakeUploader struct {
 	puts map[string][]byte
 }
@@ -32,6 +34,9 @@ type fakeUploader struct {
 func (f *fakeUploader) Put(_ context.Context, key string, body []byte, _ string) error {
 	if f.puts == nil {
 		f.puts = map[string][]byte{}
+	}
+	if _, ok := f.puts[key]; ok {
+		return ErrExists
 	}
 	f.puts[key] = body
 	return nil
@@ -99,5 +104,48 @@ func TestRunRefusesBadSnapshot(t *testing.T) {
 				t.Fatalf("state file written: %v", err)
 			}
 		})
+	}
+}
+
+// With the state file lost, the next run finds the newest snapshot already in
+// the bucket: that is success, recorded, and nothing is replaced.
+func TestRunStateLostAfterUpload(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(t.TempDir(), "last-upload")
+	opt := Options{SnapshotDir: dir, Prefix: "byname/", StateFile: state}
+	os.WriteFile(filepath.Join(dir, "byname-20261124T000000.000Z.db"), fakeDB("newest"), 0o640)
+	up := &fakeUploader{}
+	if _, err := Run(context.Background(), up, opt); err != nil {
+		t.Fatal(err)
+	}
+	first := up.puts["byname/byname-20261124T000000.000Z.db.gz"]
+	os.Remove(state)
+	res, err := Run(context.Background(), up, opt)
+	if err != nil || !res.Skipped || !res.Existed || res.Key != "" {
+		t.Fatalf("run after losing state = %+v, %v", res, err)
+	}
+	if b, _ := os.ReadFile(state); strings.TrimSpace(string(b)) != "byname-20261124T000000.000Z.db" {
+		t.Fatalf("state = %q", b)
+	}
+	if !bytes.Equal(up.puts["byname/byname-20261124T000000.000Z.db.gz"], first) || len(up.puts) != 1 {
+		t.Fatal("object replaced")
+	}
+}
+
+type failingUploader struct{}
+
+func (failingUploader) Put(context.Context, string, []byte, string) error {
+	return errors.New("access denied")
+}
+
+func TestRunUploadErrorRecordsNothing(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(t.TempDir(), "last-upload")
+	os.WriteFile(filepath.Join(dir, "byname-20261124T000000.000Z.db"), fakeDB("newest"), 0o640)
+	if _, err := Run(context.Background(), failingUploader{}, Options{SnapshotDir: dir, Prefix: "byname/", StateFile: state}); err == nil {
+		t.Fatal("upload error ignored")
+	}
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		t.Fatalf("state written after a failed upload: %v", err)
 	}
 }

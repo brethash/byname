@@ -3,8 +3,11 @@ package backup
 import (
 	"bytes"
 	"context"
+	"errors"
+	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -31,8 +34,10 @@ func NewS3(ctx context.Context, bucket, region string) (*S3Uploader, error) {
 	return &S3Uploader{client: s3.NewFromConfig(cfg), bucket: bucket}, nil
 }
 
-// Put implements Uploader. Objects are written with SSE-S3; the bucket's
-// versioning keeps every earlier upload even if a key is overwritten.
+// Put implements Uploader. Objects are written with SSE-S3, and only if the
+// key does not exist yet (If-None-Match: *): backups are write-once. The IAM
+// policy in deploy/aws refuses any PutObject without that header, so the
+// host's key can add backups but never replace one.
 func (u *S3Uploader) Put(ctx context.Context, key string, body []byte, contentType string) error {
 	_, err := u.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:               aws.String(u.bucket),
@@ -40,6 +45,11 @@ func (u *S3Uploader) Put(ctx context.Context, key string, body []byte, contentTy
 		Body:                 bytes.NewReader(body),
 		ContentType:          aws.String(contentType),
 		ServerSideEncryption: types.ServerSideEncryptionAes256,
+		IfNoneMatch:          aws.String("*"),
 	})
+	var re *awshttp.ResponseError
+	if errors.As(err, &re) && re.HTTPStatusCode() == http.StatusPreconditionFailed {
+		return ErrExists
+	}
 	return err
 }
