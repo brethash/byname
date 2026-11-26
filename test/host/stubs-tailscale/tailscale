@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# tailscale for the host test: joined to tail1234.ts.net as this machine's
+# hostname, version 1.98.1. `touch $STUB_STATE/tailscale-down` = not logged in.
+# Funnel state lives in $STUB_STATE/funnel.
+set -uo pipefail
+S="${STUB_STATE:?}"
+printf 'tailscale %s\n' "$*" >> "$S/tailscale.log"
+suffix=tail1234.ts.net
+host="$(hostname)"
+json=0
+for a in "$@"; do [[ $a == --json ]] && json=1; done
+case "${1:-}" in
+  version) printf '1.98.1\n  tailscale commit: stub\n' ;;
+  status)
+    if [[ -e $S/tailscale-down ]]; then
+      [[ $json -eq 1 ]] && printf '{"BackendState": "NeedsLogin", "MagicDNSSuffix": "", "Self": null}\n'
+      exit 1
+    fi
+    if [[ $json -eq 1 ]]; then
+      printf '{"BackendState": "Running", "MagicDNSSuffix": "%s", "Self": {"HostName": "%s", "DNSName": "%s.%s.", "Tags": ["tag:%s"], "TailscaleIPs": ["100.101.102.103"]}}\n' \
+        "$suffix" "$host" "$host" "$suffix" "$host"
+    else
+      printf '100.101.102.103  %s  tagged-devices  linux  -\n' "$host"
+    fi ;;
+  funnel|serve)
+    case " $* " in
+      *" status "*) if [[ -e $S/funnel ]]; then cat "$S/funnel"; else echo "No serve config"; fi ;;
+      *" off "*|*" reset "*) rm -f "$S/funnel" ;;
+      *" --bg "*) printf 'https://%s.%s (Funnel on)\n|-- / proxy %s\n' "$host" "$suffix" "${!#}" > "$S/funnel" ;;
+    esac ;;
+  debug) [[ ${2:-} == prefs ]] && printf '{\n  "RunSSH": true\n}\n' ;;
+esac
+exit 0

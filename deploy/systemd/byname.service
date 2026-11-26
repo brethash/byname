@@ -1,11 +1,15 @@
 # byname short-link service. Installed by deploy/host/bootstrap.sh; configured by
 # /etc/byname/byname.env (managed) and /etc/byname/byname.local.env (yours), BYNAME_* variables,
-# see `byname serve -h`. --lan-access adds the LAN subnet to IPAddressAllow via
-# the drop-in byname.service.d/10-lan-access.conf.
+# see `byname serve -h`. Drop-ins in byname.service.d, written by bootstrap.sh:
+# 05-tailscale.conf (with Tailscale) starts it after tailscaled, and
+# 10-lan-access.conf (--lan-access) adds the LAN subnet to IPAddressAllow.
 [Unit]
 Description=byname short links
-After=network-online.target tailscaled.service byname-firewall.service
-Wants=network-online.target tailscaled.service byname-firewall.service
+# Not tailscaled.service: Wants= starts even a disabled unit, which would bring
+# tailscaled (and Tailscale SSH, past the firewall) back on a --no-tailscale
+# host. 05-tailscale.conf adds it when Tailscale is in use.
+After=network-online.target byname-firewall.service
+Wants=network-online.target byname-firewall.service
 ConditionPathExists=/usr/local/lib/byname/current/byname
 
 [Service]
@@ -62,7 +66,7 @@ SystemCallErrorNumber=EPERM
 # Network: only tailnet peers and localhost (health checks) may talk to the
 # service, plus the LAN subnet if the 10-lan-access.conf drop-in exists. It
 # makes no outbound connections, except with the public address on: the
-# 20-public.conf drop-in (bootstrap.sh --public) allows any address so
+# 20-public.conf drop-in (bootstrap.sh --public-domain or --funnel) allows any address so
 # sign-in can reach Google and Slack, and adds /run/byname for the socket that
 # Tailscale Funnel proxies to. AF_UNIX is for tailscaled.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

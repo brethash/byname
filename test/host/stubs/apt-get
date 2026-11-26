@@ -1,0 +1,4 @@
+#!/bin/sh
+# No network in the test: record and succeed.
+printf 'apt-get %s\n' "$*" >> "${STUB_STATE:?}/calls.log"
+exit 0

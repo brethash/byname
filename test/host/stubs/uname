@@ -1,0 +1,3 @@
+#!/bin/sh
+# STUB_ARCH stands in for the machine type (aarch64 for a Raspberry Pi).
+if [ "${1:-}" = -m ] && [ -n "${STUB_ARCH:-}" ]; then echo "$STUB_ARCH"; else exec /usr/bin/uname "$@"; fi

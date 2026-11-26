@@ -1,0 +1,6 @@
+#!/bin/sh
+case "$1" in
+  security) echo "→ Overall exposure level for byname.service: 1.9 OK :-)" ;;
+  cat-config) cat /etc/systemd/journald.conf.d/*.conf 2>/dev/null ;;
+esac
+exit 0

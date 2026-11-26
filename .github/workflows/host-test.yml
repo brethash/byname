@@ -1,0 +1,38 @@
+# Runs deploy/host and deploy/systemd on Debian 13 in a container: `make host-test`.
+name: host-test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - deploy/host/**
+      - deploy/systemd/**
+      - test/host/**
+      - internal/store/migrations/**
+      - Makefile
+      - .github/workflows/host-test.yml
+  pull_request:
+    paths:
+      - deploy/host/**
+      - deploy/systemd/**
+      - test/host/**
+      - internal/store/migrations/**
+      - Makefile
+      - .github/workflows/host-test.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: shellcheck -x deploy/host/*.sh test/host/*.sh test/host/stubs/* test/host/stubs-tailscale/*
+      - name: Debian 13 host test
+        run: make host-test

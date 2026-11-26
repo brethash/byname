@@ -15,13 +15,18 @@ section() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 # What bootstrap.sh recorded about this host. Parsed, not sourced.
 conf() { sed -n "s/^$1=//p" /etc/byname/host.conf 2>/dev/null | head -1; }
+# A byname setting as the service sees it: systemd reads byname.local.env after
+# byname.env, so a value there wins.
+envval() {
+  sed -n "s/^$1=//p" /etc/byname/byname.env /etc/byname/byname.local.env 2>/dev/null | tail -n 1 |
+    sed -e 's/^"\(.*\)"$/\1/'
+}
 PLATFORM="$(conf PLATFORM)"; PLATFORM="${PLATFORM:-pi}"
-FIRST_HOST="$(conf NAME)"
-if [[ -r /etc/byname/byname.env ]]; then
-  FIRST_HOST="$(sed -n 's/^BYNAME_HOSTS=\([^,]*\).*/\1/p' /etc/byname/byname.env)"
-fi
-FIRST_HOST="${FIRST_HOST:-me}"
-TAG="$(conf TAG)"; TAG="${TAG:-tag:$FIRST_HOST}"
+SVC_NAME="$(conf NAME)"; SVC_NAME="${SVC_NAME:-me}" # bootstrap.sh --name: the machine and tailnet name
+# The first name byname answers to, for Host headers.
+FIRST_HOST="$(envval BYNAME_HOSTS)"; FIRST_HOST="${FIRST_HOST%%,*}"; FIRST_HOST="${FIRST_HOST//[[:space:]]/}"
+FIRST_HOST="${FIRST_HOST:-$SVC_NAME}"
+TAG="$(conf TAG)"; TAG="${TAG:-tag:$SVC_NAME}"
 TAILSCALE="$(conf TAILSCALE)"; TAILSCALE="${TAILSCALE:-1}"
 PUBLIC_DOMAIN="$(conf PUBLIC_DOMAIN)"
 
@@ -44,23 +49,27 @@ if [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" == "yes" ]]; 
 
 section "SSH"
 sshcfg="$(sshd -T 2>/dev/null)"
-for kv in "passwordauthentication no" "permitrootlogin no" "kbdinteractiveauthentication no"; do
+for kv in "passwordauthentication no" "permitrootlogin no" "kbdinteractiveauthentication no" "trustedusercakeys none"; do
   if grep -qx "$kv" <<<"$sshcfg"; then pass "sshd $kv"; else fail "sshd should have: $kv"; fi
 done
 
 section "Updates and storage"
-if apt-config dump 2>/dev/null | grep -q 'APT::Periodic::Unattended-Upgrade "1"'; then pass "unattended-upgrades enabled"; else fail "unattended-upgrades not enabled"; fi
+# Captured first: under pipefail, `cmd | grep -q` fails when grep stops
+# reading early and cmd gets SIGPIPE, even though grep found the line.
+apt_config="$(apt-config dump 2>/dev/null)"
+if grep -q 'APT::Periodic::Unattended-Upgrade "1"' <<<"$apt_config"; then pass "unattended-upgrades enabled"; else fail "unattended-upgrades not enabled"; fi
+apt_policy="$(apt-cache policy 2>/dev/null)"
 origins=("Debian")
 [[ "$TAILSCALE" == 1 ]] && origins+=("Tailscale")
 [[ "$PLATFORM" == pi ]] && origins+=("Raspberry Pi Foundation")
 for origin in "${origins[@]}"; do
-  if apt-cache policy 2>/dev/null | grep -q "o=$origin,"; then pass "apt origin '$origin' present (matches upgrade pattern)"; else warn "apt origin '$origin' not seen; check 52byname-unattended-upgrades patterns against 'apt-cache policy'"; fi
+  if grep -q "o=$origin," <<<"$apt_policy"; then pass "apt origin '$origin' present (matches upgrade pattern)"; else warn "apt origin '$origin' not seen; check 52byname-unattended-upgrades patterns against 'apt-cache policy'"; fi
 done
 journal="$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null)"
 if [[ "$PLATFORM" == pi ]]; then
   grep -q '^Storage=volatile' <<<"$journal" && pass "journal in RAM" || fail "journald not volatile"
-  if swapon --show=TYPE --noheadings 2>/dev/null | grep -qx file; then warn "file-backed swap active (SD wear)"; else pass "no file-backed swap"; fi
-  findmnt -no OPTIONS / | grep -qw noatime && pass "root mounted noatime" || warn "root not mounted noatime"
+  if grep -qx file <<<"$(swapon --show=TYPE --noheadings 2>/dev/null)"; then warn "file-backed swap active (SD wear)"; else pass "no file-backed swap"; fi
+  grep -qw noatime <<<"$(findmnt -no OPTIONS /)" && pass "root mounted noatime" || warn "root not mounted noatime"
 else
   grep -q '^SystemMaxUse=' <<<"$journal" && pass "journal size capped" || warn "journal size not capped"
   if [[ -n "$(swapon --show --noheadings 2>/dev/null)" ]] || awk '/^MemTotal:/ {exit !($2 >= 1500000)}' /proc/meminfo; then
@@ -72,15 +81,16 @@ fi
 
 section "Firewall"
 if nft list table inet byname_filter >/dev/null 2>&1; then pass "table inet byname_filter loaded"; else fail "byname firewall not loaded (systemctl status byname-firewall)"; fi
-if nft list chain inet byname_filter input 2>/dev/null | grep -q 'policy drop'; then pass "input policy drop"; else fail "input policy is not drop"; fi
+input_chain="$(nft list chain inet byname_filter input 2>/dev/null)"
+if grep -q 'policy drop' <<<"$input_chain"; then pass "input policy drop"; else fail "input policy is not drop"; fi
 if systemctl is-enabled --quiet nftables.service 2>/dev/null; then fail "Debian nftables.service enabled (its 'flush ruleset' wipes tailscale rules)"; else pass "Debian nftables.service disabled"; fi
 # LAN access must be on (or off) consistently in all three layers.
 LAN_MODE=off
 [[ -f /etc/systemd/system/byname.service.d/10-lan-access.conf ]] && LAN_MODE=on
-lan_nft=off; nft list chain inet byname_filter input 2>/dev/null | grep -q 'ip saddr .* tcp dport 80 accept' && lan_nft=on
-# systemd reads byname.local.env after byname.env, so its value wins.
-ALLOW_CIDRS="$(sed -n 's/^BYNAME_ALLOW_CIDRS=//p' /etc/byname/byname.env /etc/byname/byname.local.env 2>/dev/null | tail -1)"
-lan_env=off; printf '%s\n' "$ALLOW_CIDRS" | tr ',' '\n' | grep -vE '^(100\.64\.0\.0/10|fd7a:115c:a1e0::/48|127\.0\.0\.1/32|::1/128)$' | grep -q . && lan_env=on
+lan_nft=off; grep -q 'ip saddr .* tcp dport 80 accept' <<<"$input_chain" && lan_nft=on
+ALLOW_CIDRS="$(envval BYNAME_ALLOW_CIDRS)"
+extra_nets="$(tr ',' '\n' <<<"$ALLOW_CIDRS" | grep -vE '^(100\.64\.0\.0/10|fd7a:115c:a1e0::/48|127\.0\.0\.1/32|::1/128|)$' || true)"
+lan_env=off; [[ -n "$extra_nets" ]] && lan_env=on
 if ! [[ "$LAN_MODE" == "$lan_nft" && "$LAN_MODE" == "$lan_env" ]]; then
   fail "LAN access inconsistent: systemd drop-in=$LAN_MODE firewall=$lan_nft BYNAME_ALLOW_CIDRS=$lan_env; re-run bootstrap.sh"
 elif [[ "$PLATFORM" == cloud && "$LAN_MODE" == on ]]; then
@@ -97,9 +107,22 @@ section "Tailscale"
 TS_IP="?"
 if [[ "$TAILSCALE" == 0 ]]; then
   pass "not used (bootstrap.sh --no-tailscale)"
-  grep -q '^BYNAME_NO_WHOIS=true' /etc/byname/byname.env && pass "WhoIs off" || fail "BYNAME_NO_WHOIS isn't true without Tailscale (re-run bootstrap.sh)"
+  [[ "$(envval BYNAME_NO_WHOIS)" == true ]] && pass "WhoIs off" || fail "BYNAME_NO_WHOIS isn't true without Tailscale (re-run bootstrap.sh)"
   if systemctl is-active --quiet tailscaled 2>/dev/null; then
-    fail "tailscaled is running without Tailscale configured: Tailscale SSH bypasses the firewall (sudo tailscale down; sudo systemctl disable --now tailscaled)"
+    fail "tailscaled is running without Tailscale configured: Tailscale SSH bypasses the firewall (sudo tailscale down; sudo systemctl mask --now tailscaled)"
+  fi
+  if command -v tailscaled >/dev/null 2>&1; then
+    if [[ "$(systemctl is-enabled tailscaled.service 2>/dev/null)" == masked ]]; then
+      pass "tailscaled masked (nothing can start it)"
+    else
+      fail "tailscaled is installed but not masked, so something could start it (sudo systemctl mask --now tailscaled, or re-run bootstrap.sh)"
+    fi
+  fi
+  wants="$(systemctl show byname.service -p Wants --value 2>/dev/null)"
+  if [[ " $wants " == *" tailscaled.service "* ]]; then
+    fail "byname.service wants tailscaled.service, which starts it on every restart (re-run bootstrap.sh)"
+  else
+    pass "byname.service doesn't pull in tailscaled"
   fi
   if grep -qE '100\.64\.0\.0/10|fd7a:115c' <<<"$ALLOW_CIDRS"; then
     fail "BYNAME_ALLOW_CIDRS still trusts tailnet ranges without Tailscale (re-run bootstrap.sh)"
@@ -107,6 +130,15 @@ if [[ "$TAILSCALE" == 0 ]]; then
     pass "tailnet ranges not trusted"
   fi
 else
+if grep -q 'iifname != "tailscale0" ip saddr 100.64.0.0/10 drop' <<<"$input_chain" &&
+  grep -q 'iifname != "tailscale0" ip6 saddr fd7a:115c:a1e0::/48 drop' <<<"$input_chain"; then
+  pass "tailnet addresses dropped unless they arrive on tailscale0"
+else
+  fail "the firewall doesn't drop tailnet addresses arriving outside tailscale0 (re-run bootstrap.sh)"
+fi
+after="$(systemctl show byname.service -p After --value 2>/dev/null)"
+[[ " $after " == *" tailscaled.service "* ]] && pass "byname.service starts after tailscaled" ||
+  warn "byname.service isn't ordered after tailscaled (re-run bootstrap.sh to add byname.service.d/05-tailscale.conf)"
 ts_json="$(tailscale status --json 2>/dev/null || echo '{}')"
 ts_check="$(python3 -c '
 import json, sys
@@ -119,12 +151,12 @@ print((s.get("TailscaleIPs") or ["?"])[0])
 print(d.get("MagicDNSSuffix", ""))
 ' <<<"$ts_json")"
 mapfile -t ts <<<"$ts_check"
-[[ "${ts[0]}" == "Running" ]] && pass "tailscaled running" || fail "tailscale state: ${ts[0]} (run: sudo tailscale up --ssh --hostname=$FIRST_HOST --advertise-tags=$TAG)"
-[[ "${ts[1],,}" == "${FIRST_HOST,,}" ]] && pass "tailnet hostname ${ts[1]}" || fail "tailnet hostname is '${ts[1]}', expected '$FIRST_HOST' (is another device already named $FIRST_HOST?)"
+[[ "${ts[0]}" == "Running" ]] && pass "tailscaled running" || fail "tailscale state: ${ts[0]} (run: sudo tailscale up --ssh --hostname=$SVC_NAME --advertise-tags=$TAG)"
+[[ "${ts[1],,}" == "${SVC_NAME,,}" ]] && pass "tailnet hostname ${ts[1]}" || fail "tailnet hostname is '${ts[1]}', expected '$SVC_NAME' (is another device already named $SVC_NAME?)"
 [[ ",${ts[2]}," == *",$TAG,"* ]] && pass "node tagged $TAG (no key expiry)" || warn "node not tagged $TAG (tags: '${ts[2]}'); its key will expire"
 TS_IP="${ts[3]}"
-if tailscale debug prefs 2>/dev/null | grep -q '"RunSSH": true'; then pass "Tailscale SSH enabled"; else warn "Tailscale SSH off (tailscale set --ssh)"; fi
-if grep -q "${ts[4]:-no-suffix}" /etc/byname/byname.env 2>/dev/null; then pass "BYNAME_HOSTS includes the tailnet FQDN"; else warn "BYNAME_HOSTS lacks $FIRST_HOST.${ts[4]} (re-run bootstrap.sh)"; fi
+if grep -q '"RunSSH": true' <<<"$(tailscale debug prefs 2>/dev/null)"; then pass "Tailscale SSH enabled"; else warn "Tailscale SSH off (tailscale set --ssh)"; fi
+if grep -qF "$SVC_NAME.${ts[4]:-no-suffix}" <<<"$(envval BYNAME_HOSTS)"; then pass "BYNAME_HOSTS includes the tailnet FQDN"; else warn "BYNAME_HOSTS lacks $SVC_NAME.${ts[4]} (re-run bootstrap.sh)"; fi
 fi
 
 section "byname service"
@@ -145,9 +177,9 @@ code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H 'Host: evil.example' "htt
 [[ "$code" == "421" ]] && pass "foreign Host header refused (421)" || fail "foreign Host header got $code, want 421"
 
 # Public address: your domain, or Tailscale Funnel. byname.local.env overrides byname.env.
-PUBLIC_URL="$(sed -n 's/^BYNAME_PUBLIC_URL=//p' /etc/byname/byname.env /etc/byname/byname.local.env 2>/dev/null | tail -1)"
-SOCK="$(sed -n 's/^BYNAME_PUBLIC_LISTEN=unix://p' /etc/byname/byname.env /etc/byname/byname.local.env 2>/dev/null | tail -1)"
-SOCK="${SOCK:-/run/byname/public.sock}"
+PUBLIC_URL="$(envval BYNAME_PUBLIC_URL)"
+SOCK="$(envval BYNAME_PUBLIC_LISTEN)"; SOCK="${SOCK#unix:}"
+[[ "$SOCK" == /* ]] || SOCK=/run/byname/public.sock
 # Everything Tailscale Serve/Funnel publishes on this host. Anything other
 # than byname's socket would skip byname's sign-in.
 serve_check="$( { command -v tailscale >/dev/null && tailscale serve status --json 2>/dev/null; } | python3 -c '
@@ -182,13 +214,13 @@ if [[ -n "$PUBLIC_URL" ]]; then
   section "Public address ($PUBLIC_URL)"
   PUBLIC_HOST="${PUBLIC_URL#https://}"
   [[ -f /etc/systemd/system/byname.service.d/20-public.conf ]] && pass "drop-in 20-public.conf present" || fail "20-public.conf missing (re-run bootstrap.sh)"
-  systemctl show byname.service -p Requires --value | grep -qw byname-firewall.service && pass "byname.service requires the firewall" || fail "byname.service doesn't require byname-firewall.service (re-run bootstrap.sh)"
+  grep -qw byname-firewall.service <<<"$(systemctl show byname.service -p Requires --value)" && pass "byname.service requires the firewall" || fail "byname.service doesn't require byname-firewall.service (re-run bootstrap.sh)"
   [[ -z "${serve[2]:-}" ]] && pass "nothing else published by Tailscale Serve/Funnel" || fail "Serve/Funnel also publishes: ${serve[2]} (these skip sign-in; remove them)"
   if [[ -n "$PUBLIC_DOMAIN" ]]; then
     # Served directly: DNS, the firewall, a real certificate, and byname's gate.
     resolved="$(getent ahosts "$PUBLIC_DOMAIN" | awk '{print $1}' | sort -u | paste -sd' ' -)"
     [[ -n "$resolved" ]] && pass "$PUBLIC_DOMAIN resolves to $resolved" || fail "$PUBLIC_DOMAIN doesn't resolve: $([[ "$PLATFORM" == pi ]] && echo "point its A record at your home's public IP address (dynamic DNS if that changes)" || echo "create its A/AAAA records (tofu output dns_records)")"
-    nft list chain inet byname_filter input 2>/dev/null | grep -q 'tcp dport { 80, 443 } accept' && pass "firewall open for tcp/80 and tcp/443" || fail "firewall doesn't open tcp/80 and tcp/443 (re-run bootstrap.sh --public-domain)"
+    grep -q 'tcp dport { 80, 443 } accept' <<<"$input_chain" && pass "firewall open for tcp/80 and tcp/443" || fail "firewall doesn't open tcp/80 and tcp/443 (re-run bootstrap.sh --public-domain)"
     [[ "${serve[0]:-0}" == 1 ]] && fail "Tailscale Funnel is on as well; turn it off: tailscale funnel reset"
     # Through the real TLS listener, with certificate checks. The first
     # request may wait while Let's Encrypt issues the certificate.
@@ -256,7 +288,7 @@ for line in sys.stdin:
     code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' -X POST "$endpoint")"
     if [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
       pass "$p token endpoint reachable (HTTP $code)"
-    elif [[ $p == slack ]] && ! ip -4 route show default | grep -q .; then
+    elif [[ $p == slack && -z "$(ip -4 route show default)" ]]; then
       fail "slack.com has no IPv6 address and this server has no IPv4 route: Sign in with Slack can't work (set ipv4 = true in deploy/cloud)"
     else
       fail "$p token endpoint unreachable from this host ($endpoint)"
@@ -279,19 +311,37 @@ for line in sys.stdin:
   fi
 fi
 
-if nft list chain inet byname_filter input 2>/dev/null | grep -qE '^\s*tcp dport 22 accept'; then
+if grep -qE '^\s*tcp dport 22 accept' <<<"$input_chain"; then
   warn "the host firewall lets SSH in from anywhere (--ssh-from any): the provider firewall (ssh_cidrs) must limit it"
 fi
 
 section "Backups"
+newest="$(find /var/lib/byname/snapshots -maxdepth 1 -type f -name 'byname-*.db' -printf '%f\n' 2>/dev/null | sort | tail -n 1)"
 if systemctl is-enabled --quiet byname-backup.timer 2>/dev/null; then
   pass "byname-backup.timer enabled"
-  last="$(systemctl show byname-backup.service -p Result --value)"
-  [[ "$last" == "success" ]] && pass "last backup run: success" || warn "last backup result: $last (journalctl -u byname-backup)"
+  # What was uploaded, not the last run's Result: that is "success" before the
+  # first run, too.
+  uploaded="$(cat /var/lib/byname-backup/last-upload 2>/dev/null || true)"
+  uploaded="${uploaded//[[:space:]]/}"
+  if [[ -z "$newest" ]]; then
+    warn "no snapshot to back up yet"
+  elif [[ "$uploaded" == "$newest" ]]; then
+    pass "newest snapshot uploaded ($newest)"
+  else
+    age_min=$((($(date +%s) - $(stat -c %Y "/var/lib/byname/snapshots/$newest")) / 60))
+    # The timer runs hourly, up to 10 minutes late: allow two hours.
+    if [[ $age_min -gt 120 ]]; then
+      fail "newest snapshot $newest is $age_min min old and not uploaded; last upload: ${uploaded:-never} (journalctl -u byname-backup)"
+    else
+      pass "newest snapshot $newest is $age_min min old; the hourly backup uploads it (last upload: ${uploaded:-none yet})"
+    fi
+  fi
+  last="$(systemctl show byname-backup.service -p Result --value 2>/dev/null)"
+  [[ -z "$last" || "$last" == success ]] || warn "last backup run: $last (journalctl -u byname-backup)"
 else
   warn "backups not configured (docs/operations.md → Backups)"
 fi
-snaps="$(find /var/lib/byname/snapshots -name 'byname-*.db' 2>/dev/null | wc -l)"
+snaps="$(find /var/lib/byname/snapshots -maxdepth 1 -type f -name 'byname-*.db' 2>/dev/null | wc -l)"
 [[ "$snaps" -gt 0 ]] && pass "$snaps local snapshot(s)" || warn "no local snapshots yet"
 
 section "Checks to run from other devices"

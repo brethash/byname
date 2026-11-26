@@ -1,0 +1,4 @@
+#!/bin/sh
+# Present so `command -v tailscaled` finds Tailscale installed; never run.
+echo "tailscaled stub: not runnable" >&2
+exit 1

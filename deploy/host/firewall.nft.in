@@ -18,6 +18,11 @@ table inet byname_filter {
     ct state established,related accept
     ct state invalid drop
 
+    # With Tailscale, byname trusts tailnet addresses, which only ever arrive
+    # on tailscale0: drop them on any other interface, whatever tailscaled's
+    # own rules do (LAN access and --public-domain open port 80 beyond it).
+    @TAILNET_SPOOF_RULES@
+
     # ICMP/ICMPv6 (path MTU discovery, IPv6 neighbour discovery).
     meta l4proto { icmp, ipv6-icmp } accept
 

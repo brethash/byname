@@ -26,7 +26,7 @@ set -euo pipefail
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TAILNET_NETS="100.64.0.0/10 fd7a:115c:a1e0::/48"
 ADMIN_USER=""
-NAME="me"
+SVC_NAME="me" # --name; not NAME, which /etc/os-release sets
 TAG=""
 PLATFORM=""
 LAN_SUBNET=""
@@ -84,7 +84,7 @@ USAGE
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --admin-user) ADMIN_USER="${2:?}"; shift 2 ;;
-    --name|--hostname) NAME="${2:?}"; shift 2 ;;
+    --name|--hostname) SVC_NAME="${2:?}"; shift 2 ;;
     --tag) TAG="${2:?}"; shift 2 ;;
     --platform) PLATFORM="${2:?}"; shift 2 ;;
     --lan-subnet) LAN_SUBNET="${2:?}"; shift 2 ;;
@@ -110,7 +110,9 @@ step "Preflight"
 [[ $EUID -eq 0 ]] || die "run as root (sudo)"
 [[ -n "$ADMIN_USER" ]] || { usage; exit 2; }
 if [[ -z "$PLATFORM" ]]; then
-  if tr -d '\0' < /proc/device-tree/model 2>/dev/null | grep -q 'Raspberry Pi'; then PLATFORM=pi; else PLATFORM=cloud; fi
+  model=""
+  [[ -r /proc/device-tree/model ]] && model="$(tr -d '\0' < /proc/device-tree/model)"
+  if [[ "$model" == *"Raspberry Pi"* ]]; then PLATFORM=pi; else PLATFORM=cloud; fi
 fi
 case "$PLATFORM" in
   pi)
@@ -124,20 +126,33 @@ case "$PLATFORM" in
     ;;
   *) die "--platform must be pi or cloud" ;;
 esac
-# shellcheck source=/dev/null
-. /etc/os-release
-[[ "${ID:-}" == "debian" ]] || die "expected Debian or Raspberry Pi OS, got ${PRETTY_NAME:-unknown}"
-[[ -n "${VERSION_CODENAME:-}" ]] || die "cannot read VERSION_CODENAME from /etc/os-release"
+# /etc/os-release sets NAME, VERSION, ID and more: read the fields needed in a
+# subshell, so none of them can overwrite this script's variables.
+os_release() { (
+  # shellcheck source=/dev/null
+  . /etc/os-release && printf '%s' "${!1:-}"
+) 2>/dev/null; }
+OS_ID="$(os_release ID || true)"
+OS_CODENAME="$(os_release VERSION_CODENAME || true)"
+OS_PRETTY="$(os_release PRETTY_NAME || true)"
+[[ "$OS_ID" == "debian" ]] || die "expected Debian or Raspberry Pi OS, got ${OS_PRETTY:-unknown}"
+[[ -n "$OS_CODENAME" ]] || die "cannot read VERSION_CODENAME from /etc/os-release"
+if ! command -v python3 >/dev/null 2>&1; then
+  # The checks below use it; Raspberry Pi OS and Debian's cloud images have it.
+  apt-get -o DPkg::Lock::Timeout=300 update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq python3 >/dev/null
+  ok "installed python3 (preflight needs it)"
+fi
 id "$ADMIN_USER" >/dev/null 2>&1 || die "user $ADMIN_USER does not exist"
 ADMIN_HOME="$(getent passwd "$ADMIN_USER" | cut -d: -f6)"
 [[ -s "$ADMIN_HOME/.ssh/authorized_keys" ]] ||
   die "$ADMIN_HOME/.ssh/authorized_keys is empty; add your SSH key before password logins are disabled"
 # A DNS label that starts with a letter: it is typed into address bars as
 # NAME/..., and becomes the hostname and the tailnet name.
-[[ "$NAME" =~ ^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$ ]] ||
-  die "invalid --name '$NAME': use 1-32 lower-case letters, digits or dashes, starting with a letter"
-[[ "$NAME" != "localhost" ]] || die "--name localhost would shadow this machine's loopback name"
-[[ -n "$TAG" ]] || TAG="tag:$NAME"
+[[ "$SVC_NAME" =~ ^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$ ]] ||
+  die "invalid --name '$SVC_NAME': use 1-32 lower-case letters, digits or dashes, starting with a letter"
+[[ "$SVC_NAME" != "localhost" ]] || die "--name localhost would shadow this machine's loopback name"
+[[ -n "$TAG" ]] || TAG="tag:$SVC_NAME"
 [[ "$TAG" =~ ^tag:[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || die "invalid --tag '$TAG' (want tag:something)"
 PUBLIC=0
 [[ $FUNNEL -eq 1 || -n "$PUBLIC_DOMAIN" ]] && PUBLIC=1
@@ -169,7 +184,7 @@ if [[ $TAILSCALE -eq 0 ]] && systemctl is-active --quiet tailscaled 2>/dev/null;
   # Tailscale SSH is answered by tailscaled itself, past the host firewall,
   # so leaving it running would leave tailnet SSH open. Stopping it here could
   # cut off the session running this script.
-  die "--no-tailscale, but tailscaled is running (Tailscale SSH bypasses the firewall). From an OpenSSH session, run: sudo tailscale down; sudo systemctl disable --now tailscaled. Then re-run"
+  die "--no-tailscale, but tailscaled is running (Tailscale SSH bypasses the firewall). From an OpenSSH session, run: sudo tailscale down; sudo systemctl mask --now tailscaled. Then re-run"
 fi
 if [[ $TAILSCALE -eq 0 && "$PLATFORM" == pi && $LAN_ACCESS -eq 0 && -z "$PUBLIC_DOMAIN" ]]; then
   die "without Tailscale, a Pi needs --lan-access or --public-domain: otherwise nobody can use the service"
@@ -198,23 +213,23 @@ ipaddress.IPv4Network(sys.argv[1], strict=True)
 PY
   [[ -z "$LAN_DOMAIN" || "$LAN_DOMAIN" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || die "invalid --lan-domain: $LAN_DOMAIN"
   [[ "$LAN_DOMAIN" == "local" ]] && die "--lan-domain local is mDNS, not router DNS; use your router's domain (lan, home, home.arpa…)"
-  ok "$PRETTY_NAME on $(uname -m) (Raspberry Pi), service $NAME, admin $ADMIN_USER, LAN $LAN_SUBNET, LAN access $([[ $LAN_ACCESS -eq 1 ]] && echo on || echo off)"
+  ok "$OS_PRETTY on $(uname -m) (Raspberry Pi), service $SVC_NAME, admin $ADMIN_USER, LAN $LAN_SUBNET, LAN access $([[ $LAN_ACCESS -eq 1 ]] && echo on || echo off)"
 else
-  ok "$PRETTY_NAME on $(uname -m) (cloud), service $NAME, admin $ADMIN_USER, Tailscale $([[ $TAILSCALE -eq 1 ]] && echo on || echo off)"
+  ok "$OS_PRETTY on $(uname -m) (cloud), service $SVC_NAME, admin $ADMIN_USER, Tailscale $([[ $TAILSCALE -eq 1 ]] && echo on || echo off)"
 fi
 
 # ---------------------------------------------------------------- hostname
 step "Hostname"
-if [[ "$(hostname)" != "$NAME" ]]; then
-  hostnamectl set-hostname "$NAME"
-  ok "hostname set to $NAME"
+if [[ "$(hostname)" != "$SVC_NAME" ]]; then
+  hostnamectl set-hostname "$SVC_NAME"
+  ok "hostname set to $SVC_NAME"
 else
-  ok "hostname is $NAME"
+  ok "hostname is $SVC_NAME"
 fi
 if grep -q '^127\.0\.1\.1' /etc/hosts; then
-  sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$NAME/" /etc/hosts
+  sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$SVC_NAME/" /etc/hosts
 else
-  printf '127.0.1.1\t%s\n' "$NAME" >> /etc/hosts
+  printf '127.0.1.1\t%s\n' "$SVC_NAME" >> /etc/hosts
 fi
 if [[ -d /etc/cloud/cloud.cfg.d ]]; then
   # Stop cloud-init from putting the provider's hostname back on reboot.
@@ -247,7 +262,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get -o DPkg::Lock::Timeout=300 update -qq
 purge=()
 for pkg in avahi-daemon bluez triggerhappy rpi-connect rpi-connect-lite modemmanager cups cups-daemon; do
-  if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
+  if [[ "$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true)" == "install ok installed" ]]; then
     purge+=("$pkg")
   fi
 done
@@ -263,9 +278,17 @@ ok "installed unattended-upgrades, nftables, sqlite3, curl"
 # ---------------------------------------------------------------- tailscale
 step "Tailscale"
 if [[ $TAILSCALE -eq 0 ]]; then
-  ok "not used (--no-tailscale)"
+  if command -v tailscaled >/dev/null 2>&1; then
+    # Masked, not only disabled: anything that wants it could start a disabled
+    # tailscaled, and Tailscale SSH would bypass the firewall.
+    systemctl mask tailscaled.service >/dev/null 2>&1 ||
+      die "could not mask tailscaled.service; without Tailscale nothing may start it"
+    ok "not used (--no-tailscale); tailscaled is masked, so nothing starts it"
+  else
+    ok "not used (--no-tailscale)"
+  fi
 elif ! command -v tailscale >/dev/null 2>&1; then
-  repo="https://pkgs.tailscale.com/stable/${ID}/${VERSION_CODENAME}"
+  repo="https://pkgs.tailscale.com/stable/${OS_ID}/${OS_CODENAME}"
   curl -fsSL "$repo.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg
   curl -fsSL "$repo.tailscale-keyring.list" -o /etc/apt/sources.list.d/tailscale.list
   apt-get -o DPkg::Lock::Timeout=300 update -qq
@@ -275,6 +298,7 @@ else
   ok "tailscale $(tailscale version | head -1) present"
 fi
 if [[ $TAILSCALE -eq 1 ]]; then
+  systemctl unmask tailscaled.service >/dev/null 2>&1 || true # masked by a --no-tailscale run
   systemctl enable --now tailscaled >/dev/null 2>&1
 fi
 
@@ -287,7 +311,13 @@ else
   step "OpenSSH (key-only; reachable as --ssh-from says)"
 fi
 # 01- sorts before any Imager/cloud-init drop-in; sshd keeps the first value.
-cat > /etc/ssh/sshd_config.d/01-byname-hardening.conf <<EOF
+SSHD_DROPIN=/etc/ssh/sshd_config.d/01-byname-hardening.conf
+# Tested before it goes in: a bad file in place would lock you out at sshd's
+# next restart. The candidate's name doesn't match *.conf, so sshd ignores it.
+sshd_new="$(mktemp /etc/ssh/sshd_config.d/.01-byname-hardening.XXXXXX)"
+sshd_test="$(mktemp /etc/ssh/.byname-sshd-test.XXXXXX)"
+trap 'rm -f "$sshd_new" "$sshd_test"' EXIT
+cat > "$sshd_new" <<EOF
 # Managed by byname bootstrap.sh
 PermitRootLogin no
 PasswordAuthentication no
@@ -295,13 +325,24 @@ KbdInteractiveAuthentication no
 PubkeyAuthentication yes
 AuthenticationMethods publickey
 AllowUsers $ADMIN_USER
+# Only the keys in authorized_keys, no certificate authority (AWS Lightsail's
+# images trust Amazon's, for its browser-based SSH).
+TrustedUserCAKeys none
 X11Forwarding no
 MaxAuthTries 3
 LoginGraceTime 20
 EOF
-sshd -t || die "sshd config test failed; not reloading"
+chmod 0644 "$sshd_new"
+# Test it as sshd will read it: first, then the rest of the configuration.
+printf 'Include %s\nInclude /etc/ssh/sshd_config\n' "$sshd_new" > "$sshd_test"
+if ! out="$(sshd -t -f "$sshd_test" 2>&1)"; then
+  printf '%s\n' "$out" | sed 's/^/    /'
+  die "sshd rejects this configuration (above); nothing changed. Fix it, then re-run"
+fi
+mv "$sshd_new" "$SSHD_DROPIN"
+sshd -t || die "sshd config test failed with $SSHD_DROPIN in place; fix it before sshd restarts"
 systemctl reload ssh 2>/dev/null || systemctl reload sshd
-ok "sshd: keys only, root login off, AllowUsers $ADMIN_USER"
+ok "sshd: keys only (no certificate authorities), root login off, AllowUsers $ADMIN_USER"
 
 # ---------------------------------------------------------------- updates
 step "Unattended upgrades"
@@ -332,7 +373,9 @@ mkdir -p /etc/systemd/journald.conf.d
 rm -f /etc/systemd/journald.conf.d/10-byname-volatile.conf # older name
 if [[ "$PLATFORM" == pi ]]; then
   step "SD card wear"
-  if findmnt -no OPTIONS / | grep -qw noatime; then
+  # Captured, not piped into grep -q: under pipefail an early-exiting grep
+  # can fail the pipeline (SIGPIPE) even when it matched.
+  if grep -qw noatime <<<"$(findmnt -no OPTIONS /)"; then
     ok "root mounted noatime"
   else
     warn "root is not mounted noatime; add noatime to / in /etc/fstab"
@@ -342,7 +385,7 @@ if [[ "$PLATFORM" == pi ]]; then
     systemctl disable --now dphys-swapfile >/dev/null 2>&1 || true
     ok "disabled dphys-swapfile (file swap on SD)"
   fi
-  if swapon --show=TYPE --noheadings 2>/dev/null | grep -qx file; then
+  if grep -qx file <<<"$(swapon --show=TYPE --noheadings 2>/dev/null)"; then
     warn "a file-backed swap is still active: $(swapon --show=NAME --noheadings | tr '\n' ' ')"
   else
     ok "no file-backed swap (zram is fine)"
@@ -402,9 +445,9 @@ if [[ $TAILSCALE -eq 1 ]]; then
 try: print(json.load(sys.stdin).get("MagicDNSSuffix") or "")
 except Exception: print("")' || true)"
 fi
-HOSTS="$NAME"
-[[ -n "$TS_SUFFIX" ]] && HOSTS+=",$NAME.$TS_SUFFIX"
-[[ -n "$LAN_DOMAIN" ]] && HOSTS+=",$NAME.$LAN_DOMAIN"
+HOSTS="$SVC_NAME"
+[[ -n "$TS_SUFFIX" ]] && HOSTS+=",$SVC_NAME.$TS_SUFFIX"
+[[ -n "$LAN_DOMAIN" ]] && HOSTS+=",$SVC_NAME.$LAN_DOMAIN"
 if [[ $LAN_ACCESS -eq 1 ]]; then
   # Also accept the Pi's own LAN address as a Host name (http://192.168.1.x/),
   # handy before router DNS is set up. Safe against DNS rebinding: a hostile
@@ -436,8 +479,8 @@ if [[ $FUNNEL -eq 1 ]]; then
     die "--funnel needs Tailscale 1.98 or later (Funnel to a unix socket); this is ${ts_ver:-unknown}: apt-get install tailscale"
   DNS_NAME="$(tailscale status --json --peers=false 2>/dev/null | python3 -c 'import json, sys
 print(((json.load(sys.stdin).get("Self") or {}).get("DNSName") or "").rstrip(".").lower())')"
-  [[ "$DNS_NAME" == "$NAME.$TS_SUFFIX" ]] ||
-    die "this machine's tailnet name is '$DNS_NAME', not $NAME.$TS_SUFFIX (is another device named $NAME?)"
+  [[ "$DNS_NAME" == "$SVC_NAME.$TS_SUFFIX" ]] ||
+    die "this machine's tailnet name is '$DNS_NAME', not $SVC_NAME.$TS_SUFFIX (is another device named $SVC_NAME?)"
   PUBLIC_URL="https://$DNS_NAME"
   PUBLIC_LISTEN="unix:$PUBLIC_SOCK"
 fi
@@ -452,7 +495,7 @@ chmod 0644 /etc/byname/byname.env
 cat > /etc/byname/host.conf <<EOF
 # Managed by byname bootstrap.sh; read by byname-verify.
 PLATFORM=$PLATFORM
-NAME=$NAME
+NAME=$SVC_NAME
 TAG=$TAG
 TAILSCALE=$TAILSCALE
 LAN_SUBNET=$LAN_SUBNET
@@ -465,9 +508,17 @@ ok "wrote /etc/byname/byname.env (BYNAME_HOSTS=$HOSTS)"
 ok "allowed peers: $ALLOW"
 [[ -n "$PUBLIC_URL" ]] && ok "public address $PUBLIC_URL, sign-in with:$SIGNIN"
 [[ $TAILSCALE -eq 0 || -n "$TS_SUFFIX" ]] || warn "tailnet not joined yet; re-run this script after 'tailscale up' to add the full tailnet name to BYNAME_HOSTS"
+install -d -m 0755 /etc/systemd/system/byname.service.d
+# Only with Tailscale does byname.service want tailscaled (WhoIs, Funnel):
+# Wants= starts even a disabled unit.
+if [[ $TAILSCALE -eq 1 ]]; then
+  printf '# Managed by byname bootstrap.sh (with Tailscale)\n[Unit]\nWants=tailscaled.service\nAfter=tailscaled.service\n' \
+    > /etc/systemd/system/byname.service.d/05-tailscale.conf
+else
+  rm -f /etc/systemd/system/byname.service.d/05-tailscale.conf
+fi
 # systemd's IP filter for byname.service only allows the tailnet and localhost;
 # LAN access adds the LAN subnet in a drop-in.
-install -d -m 0755 /etc/systemd/system/byname.service.d
 if [[ $LAN_ACCESS -eq 1 ]]; then
   printf '# Managed by byname bootstrap.sh --lan-access\n[Service]\nIPAddressAllow=%s\n' "$LAN_SUBNET" \
     > /etc/systemd/system/byname.service.d/10-lan-access.conf
@@ -537,8 +588,10 @@ elif [[ -n "$SSH_FROM" ]]; then
 fi
 SSH_RULE="$(printf '%s; ' "${SSH_RULES[@]}")"
 if [[ $TAILSCALE -eq 1 ]]; then
+  TAILNET_SPOOF_RULES='iifname != "tailscale0" ip saddr 100.64.0.0/10 drop; iifname != "tailscale0" ip6 saddr fd7a:115c:a1e0::/48 drop'
   TAILNET_RULES='udp dport 41641 accept; iifname "tailscale0" tcp dport 80 accept'
 else
+  TAILNET_SPOOF_RULES="# (no Tailscale: byname trusts no tailnet addresses)"
   TAILNET_RULES="# (no Tailscale)"
 fi
 if [[ -n "$PUBLIC_DOMAIN" ]]; then
@@ -547,7 +600,7 @@ else
   PUBLIC_RULE="# (no public domain; bootstrap.sh --public-domain opens 80 and 443)"
 fi
 sed -e "s|@SSH_RULE@|$SSH_RULE|" -e "s|@LAN_HTTP_RULE@|$LAN_HTTP_RULE|" \
-  -e "s|@TAILNET_RULES@|$TAILNET_RULES|" -e "s|@PUBLIC_RULE@|$PUBLIC_RULE|" \
+  -e "s|@TAILNET_SPOOF_RULES@|$TAILNET_SPOOF_RULES|" -e "s|@TAILNET_RULES@|$TAILNET_RULES|" -e "s|@PUBLIC_RULE@|$PUBLIC_RULE|" \
   "$DEPLOY_DIR/host/firewall.nft.in" > /etc/byname/firewall.nft.new
 nft -c -f /etc/byname/firewall.nft.new || die "firewall rules failed to parse"
 # Lockout guard: an OpenSSH session from an address the new rules don't allow
@@ -575,12 +628,27 @@ for line in sys.stdin:
   fi
 fi
 mv /etc/byname/firewall.nft.new /etc/byname/firewall.nft
-# Debian's nftables.service flushes the whole ruleset (including tailscaled's).
-systemctl disable --now nftables.service >/dev/null 2>&1 || true
+# Debian's nftables.service flushes the whole ruleset, tailscaled's included,
+# when it starts, reloads or stops. Disable it without stopping it. If it is
+# running, stop it with its ExecStop (nft flush ruleset) emptied, so neither
+# this nor a later stop flushes anything; the rules it loaded stay.
+systemctl disable nftables.service >/dev/null 2>&1 || true
+if systemctl is-active --quiet nftables.service 2>/dev/null; then
+  install -d -m 0755 /run/systemd/system/nftables.service.d
+  printf '# byname bootstrap.sh: stop without flushing the ruleset\n[Service]\nExecStop=\n' \
+    > /run/systemd/system/nftables.service.d/50-byname-no-flush.conf
+  systemctl daemon-reload
+  systemctl stop nftables.service
+  rm -f /run/systemd/system/nftables.service.d/50-byname-no-flush.conf
+  ok "stopped Debian's nftables.service without flushing the ruleset"
+fi
 install -m 0644 "$DEPLOY_DIR/systemd/byname-firewall.service" /etc/systemd/system/byname-firewall.service
 systemctl daemon-reload
 systemctl enable byname-firewall.service >/dev/null 2>&1
-systemctl restart byname-firewall.service
+# Reload swaps the table in one transaction (ExecReload is a single nft -f); a
+# restart would delete it first (ExecStop) and leave a moment with no filter.
+systemctl reload-or-restart byname-firewall.service
+[[ $TAILSCALE -eq 1 ]] && ok "tailnet addresses dropped unless they arrive on tailscale0"
 if [[ "$PLATFORM" == cloud ]]; then
   allowed=""
   [[ $TAILSCALE -eq 1 ]] && allowed+="tcp/80 and tcp/22 on tailscale0, udp/41641, "
@@ -623,7 +691,8 @@ if [[ $FUNNEL -eq 1 ]]; then
     die "tailscale funnel failed: turn on HTTPS certificates (admin console → DNS) and give $TAG the funnel attribute in your tailnet policy (deploy/tailscale/policy.hujson), then re-run"
   fi
   ok "$PUBLIC_URL is on the internet (Funnel → $PUBLIC_SOCK); outside the tailnet it asks for sign-in"
-elif command -v tailscale >/dev/null 2>&1 && tailscale funnel status 2>/dev/null | grep -qF "$PUBLIC_SOCK"; then
+elif command -v tailscale >/dev/null 2>&1 &&
+  grep -qF "$PUBLIC_SOCK" <<<"$(tailscale funnel status 2>/dev/null || true)"; then
   step "Public address"
   tailscale funnel --https=443 off >/dev/null 2>&1 || true
   tailscale serve --https=443 off >/dev/null 2>&1 || true
@@ -640,7 +709,7 @@ if [[ $TAILSCALE -eq 1 ]] && ! tailscale status >/dev/null 2>&1; then
   if [[ "$PLATFORM" == pi ]]; then
     cat <<EOF
     1. Join the tailnet (opens a login URL; your policy must define $TAG first):
-         sudo tailscale up --ssh --hostname=$NAME --advertise-tags=$TAG
+         sudo tailscale up --ssh --hostname=$SVC_NAME --advertise-tags=$TAG
     2. Re-run this script so BYNAME_HOSTS includes the full tailnet name.
 EOF
   else
@@ -649,7 +718,7 @@ EOF
 fi
 [[ $REBOOT_NEEDED -eq 1 ]] && echo "    * Reboot to apply config.txt changes: sudo reboot"
 if [[ $TAILSCALE -eq 1 ]]; then
-  echo "    * Deploy from your Mac:  make deploy TARGET=$ADMIN_USER@$NAME"
+  echo "    * Deploy from your Mac:  make deploy TARGET=$ADMIN_USER@$SVC_NAME"
 elif [[ "$PLATFORM" == pi ]]; then
   # OpenSSH on a Pi answers the LAN only, never the public domain.
   echo "    * Deploy from your Mac (on the home network):  make deploy TARGET=$ADMIN_USER@${LAN_IP:-PI-LAN-ADDRESS}"

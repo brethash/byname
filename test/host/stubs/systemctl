@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# systemctl for the host test (there is no systemd in the container).
+#
+# Keeps each unit's state (active, enabled, masked) as files in
+# $STUB_STATE/units and logs every call to $STUB_STATE/systemctl.log. It runs
+# the units whose effects the test checks, from their unit files and drop-ins:
+#   byname-firewall.service, nftables.service  oneshot: ExecStart, ExecReload, ExecStop
+#   byname.service                             ExecStart in the background, with its
+#                                              EnvironmentFiles, StateDirectory and
+#                                              ConditionPathExists
+# Every other unit only changes state. `echo VERSION > $STUB_STATE/fail-start`
+# makes starting byname.service fail while current points at VERSION.
+set -uo pipefail
+
+S="${STUB_STATE:?}"
+mkdir -p "$S/units"
+printf 'systemctl %s\n' "$*" >> "$S/systemctl.log"
+log() { printf '  %s\n' "$*" >> "$S/systemctl.log"; }
+
+UNIT_DIRS=(/etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system)
+EMULATED=" byname-firewall.service nftables.service "
+
+unit_name() { if [[ $1 == *.* ]]; then echo "$1"; else echo "$1.service"; fi; }
+is_() { [[ -e "$S/units/$1.$2" ]]; }
+set_() { touch "$S/units/$1.$2"; }
+clear_() { rm -f "$S/units/$1.$2"; }
+
+# The unit file, then its drop-ins in file-name order.
+unit_files() {
+  local d f
+  for d in "${UNIT_DIRS[@]}"; do
+    if [[ -f $d/$1 ]]; then echo "$d/$1"; break; fi
+  done
+  for d in "${UNIT_DIRS[@]}"; do
+    for f in "$d/$1.d"/*.conf; do [[ -f $f ]] && printf '%s\t%s\n' "${f##*/}" "$f"; done
+  done | sort -s -k1,1 | cut -f2-
+}
+
+# Every value of KEY= in the unit and its drop-ins; an empty KEY= resets the list.
+values() {
+  local f line
+  local -a vals=()
+  while IFS= read -r f; do
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ $line == "$2="* ]] || continue
+      line=${line#"$2="}
+      if [[ -z $line ]]; then vals=(); else vals+=("$line"); fi
+    done < "$f"
+  done < <(unit_files "$1")
+  if [[ ${#vals[@]} -gt 0 ]]; then printf '%s\n' "${vals[@]}"; fi
+}
+
+# Run a oneshot unit's ExecStart/ExecReload/ExecStop lines.
+run_exec() {
+  local cmd ignore rc=0
+  local -a argv
+  while IFS= read -r cmd; do
+    ignore=0
+    if [[ $cmd == -* ]]; then ignore=1; cmd=${cmd#-}; fi
+    log "$1 $2: $cmd"
+    read -ra argv <<<"$cmd"
+    if ! "${argv[@]}"; then [[ $ignore -eq 1 ]] || rc=1; fi
+  done < <(values "$1" "$2")
+  return $rc
+}
+
+byname_running() {
+  local pid
+  pid="$(cat "$S/byname.pid" 2>/dev/null)" || return 1
+  [[ -n $pid && -r /proc/$pid/stat ]] || return 1
+  [[ "$(awk '{print $3}' "/proc/$pid/stat")" != Z ]]
+}
+
+start_byname() {
+  local c f line k v cur user mode dir
+  local -a envs=() argv=()
+  while IFS= read -r c; do
+    if [[ ! -e $c ]]; then log "byname.service: condition failed: $c"; return 0; fi
+  done < <(values byname.service ConditionPathExists)
+  cur="$(readlink /usr/local/lib/byname/current 2>/dev/null || true)"
+  if [[ -n $cur && -f $S/fail-start && "$(cat "$S/fail-start")" == "$cur" ]]; then
+    echo "Job for byname.service failed because the control process exited with error code." >&2
+    return 1
+  fi
+  user="$(values byname.service User | tail -1)"
+  mode="$(values byname.service StateDirectoryMode | tail -1)"
+  for dir in $(values byname.service StateDirectory); do
+    install -d -m "${mode:-0755}" -o "${user:-root}" -g "${user:-root}" "/var/lib/$dir"
+  done
+  while IFS= read -r f; do
+    f=${f#-}
+    [[ -r $f ]] || continue
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ $line =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+      k=${line%%=*} v=${line#*=}
+      if [[ $v == \"*\" && ${#v} -ge 2 ]]; then v=${v:1:${#v}-2}; fi
+      envs+=("$k=$v")
+    done < "$f"
+  done < <(values byname.service EnvironmentFile)
+  read -ra argv <<<"$(values byname.service ExecStart | tail -1)"
+  log "byname.service: start ${argv[*]}"
+  env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin "${envs[@]}" "${argv[@]}" > "$S/byname.out" 2>&1 < /dev/null &
+  echo $! > "$S/byname.pid"
+  # Type=simple returns once the process runs; give it a moment to listen.
+  for _ in $(seq 1 30); do
+    byname_running || break
+    [[ -n "$(ss -Hltn 'sport = :80')" ]] && break
+    sleep 0.1
+  done
+  return 0
+}
+
+stop_byname() {
+  local pid
+  pid="$(cat "$S/byname.pid" 2>/dev/null)" || return 0
+  kill "$pid" 2>/dev/null
+  for _ in $(seq 1 50); do byname_running || break; sleep 0.1; done
+  rm -f "$S/byname.pid"
+}
+
+active() {
+  if [[ $1 == byname.service ]]; then byname_running; else is_ "$1" active; fi
+}
+
+start() {
+  if is_ "$1" masked; then echo "Failed to start $1: Unit $1 is masked." >&2; return 1; fi
+  active "$1" && return 0
+  if [[ $1 == byname.service ]]; then start_byname; return; fi
+  if [[ $EMULATED == *" $1 "* ]]; then run_exec "$1" ExecStart || return 1; fi
+  set_ "$1" active
+}
+
+stop() {
+  active "$1" || return 0
+  if [[ $1 == byname.service ]]; then stop_byname; return 0; fi
+  if [[ $EMULATED == *" $1 "* ]]; then run_exec "$1" ExecStop; fi
+  clear_ "$1" active
+}
+
+reload() {
+  if ! active "$1"; then echo "Failed to reload $1: Unit $1 is not active." >&2; return 1; fi
+  if [[ $EMULATED == *" $1 "* ]]; then run_exec "$1" ExecReload || return 1; fi
+  return 0
+}
+
+quiet=0 now=0 value=0 prop=""
+args=()
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -q|--quiet) quiet=1 ;;
+    --now) now=1 ;;
+    --value) value=1 ;;
+    -p|--property) prop=$2; shift ;;
+    --no-pager|--no-legend|--no-block) ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
+cmd=${args[0]:-}
+units=()
+for u in "${args[@]:1}"; do units+=("$(unit_name "$u")"); done
+
+rc=0
+case $cmd in
+  --version) printf 'systemd 257 (257.9-1~deb13u1)\n+PAM +AUDIT +SELINUX\n' ;;
+  daemon-reload | reset-failed) ;;
+  is-active)
+    if active "${units[0]}"; then [[ $quiet -eq 1 ]] || echo active
+    else [[ $quiet -eq 1 ]] || echo inactive; rc=3; fi ;;
+  is-enabled)
+    if is_ "${units[0]}" masked; then [[ $quiet -eq 1 ]] || echo masked; rc=1
+    elif is_ "${units[0]}" enabled; then [[ $quiet -eq 1 ]] || echo enabled
+    else [[ $quiet -eq 1 ]] || echo disabled; rc=1; fi ;;
+  enable)
+    for u in "${units[@]}"; do
+      if is_ "$u" masked; then echo "Failed to enable unit: Unit file $u is masked." >&2; rc=1; continue; fi
+      set_ "$u" enabled
+      if [[ $now -eq 1 ]]; then start "$u" || rc=1; fi
+    done ;;
+  disable)
+    for u in "${units[@]}"; do clear_ "$u" enabled; if [[ $now -eq 1 ]]; then stop "$u"; fi; done ;;
+  mask)
+    for u in "${units[@]}"; do set_ "$u" masked; if [[ $now -eq 1 ]]; then stop "$u"; fi; done ;;
+  unmask)
+    for u in "${units[@]}"; do clear_ "$u" masked; done ;;
+  start) for u in "${units[@]}"; do start "$u" || rc=1; done ;;
+  stop) for u in "${units[@]}"; do stop "$u"; done ;;
+  restart) for u in "${units[@]}"; do stop "$u"; start "$u" || rc=1; done ;;
+  try-restart) for u in "${units[@]}"; do if active "$u"; then stop "$u"; start "$u" || rc=1; fi; done ;;
+  reload) for u in "${units[@]}"; do reload "$u" || rc=1; done ;;
+  reload-or-restart)
+    for u in "${units[@]}"; do
+      if active "$u"; then reload "$u" || rc=1; else start "$u" || rc=1; fi
+    done ;;
+  show)
+    v="$(values "${units[0]}" "$prop" | paste -sd' ' -)"
+    # systemd's default: a service that never ran reports Result=success.
+    if [[ -z $v && $prop == Result ]]; then v=success; fi
+    if [[ $value -eq 1 ]]; then echo "$v"; else echo "$prop=$v"; fi ;;
+  *) echo "systemctl stub: unsupported: $*" >&2; rc=1 ;;
+esac
+exit $rc

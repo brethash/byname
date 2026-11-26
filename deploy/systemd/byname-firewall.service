@@ -12,6 +12,8 @@ After=local-fs.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/nft -f /etc/byname/firewall.nft
+# One nft -f is one transaction: the old table is replaced, never missing.
+# Change the rules with `systemctl reload`; restart runs ExecStop first.
 ExecReload=/usr/sbin/nft -f /etc/byname/firewall.nft
 ExecStop=/usr/sbin/nft delete table inet byname_filter
 

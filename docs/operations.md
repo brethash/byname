@@ -21,12 +21,13 @@ that name wherever these docs say `me` in a hostname or URL, and
 | `/etc/byname/byname.env` | `byname serve` settings (`BYNAME_HOSTS`, …), rewritten by `bootstrap.sh` |
 | `/etc/byname/byname.local.env` | your own `BYNAME_*` overrides (kept across bootstrap runs) |
 | `/etc/byname/host.conf` | platform (`pi`/`cloud`), name and tag, for `byname-verify` |
+| `/etc/systemd/system/byname.service.d/05-tailscale.conf` | present only with Tailscale: starts byname after `tailscaled` (without Tailscale, `tailscaled` is masked) |
 | `/etc/systemd/system/byname.service.d/10-lan-access.conf` | present only with `--lan-access` |
 | `/etc/byname/firewall.nft` | nftables table `inet byname_filter` |
 | `/etc/byname/byname-backup.env` | backup bucket/region (optional) |
 | `/etc/credstore/byname-backup-aws` | backup AWS key (root 0600, optional) |
 | `/var/lib/byname/byname.db` | the database (SQLite, WAL) |
-| `/var/lib/byname/snapshots/` | `byname-<UTC time>.db` snapshots (last 14) |
+| `/var/lib/byname/snapshots/` | `byname-<UTC time>.db` snapshots (last 14), and the `pre-restore-<UTC time>.db` copies `byname-restore` keeps (never pruned) |
 | `/usr/local/sbin/byname-verify`, `byname-restore` | checks and restore helper |
 | units | `byname.service`, `byname-firewall.service`, `byname-backup.service` + `.timer` |
 
@@ -223,13 +224,22 @@ matches the host, then on the host:
 2. snapshots the database **with the current binary** (before any migration);
 3. switches the `current` symlink atomically and restarts `byname`;
 4. polls `/_/healthz` for the new version (20 tries, up to about 80 s); on
-   failure it switches back and restarts the previous version.
+   failure it switches back, puts back the systemd units it replaced, and
+   restarts the previous version.
 
 It refuses a dirty working tree unless you set `FORCE=1`.
 
 If a release that changed the database schema has to be rolled back, the old
-binary refuses the newer schema on purpose. Restore the pre-deploy snapshot
-that step 2 wrote: `sudo byname-restore $(ls -1 /var/lib/byname/snapshots/byname-*.db | tail -1)`.
+binary refuses the newer schema on purpose, so the automatic rollback fails
+too. Restore the snapshot that step 2 wrote. The deploy prints its path and,
+when the rollback fails, the whole `sudo byname-restore …` command to run.
+Right after the failed deploy it is also the newest snapshot:
+
+```sh
+sudo byname-restore --latest        # or: sudo byname-restore --list, then pick one
+```
+
+Changes made since that snapshot are lost.
 
 ## Backups (S3)
 
@@ -290,9 +300,14 @@ sudo systemctl start byname-backup.service && journalctl -u byname-backup -n 5
 From a local snapshot (on the host):
 
 ```sh
-ls /var/lib/byname/snapshots/
+sudo byname-restore --list          # oldest first, with times and sizes
 sudo byname-restore /var/lib/byname/snapshots/byname-20261124T120000.000Z.db
+sudo byname-restore --latest        # the newest snapshot
 ```
+
+The snapshot directory is readable only by `byname`, so list it with
+`--list` (or `sudo ls`): a plain `ls`, or a `$(ls …)` inside a `sudo` command,
+runs as you and can't see it.
 
 From S3 (the host's key cannot read, so fetch from your Mac):
 
@@ -303,8 +318,18 @@ scp byname-20261124T120000.000Z.db.gz <you>@me:
 ssh <you>@me sudo byname-restore byname-20261124T120000.000Z.db.gz
 ```
 
-`byname-restore` integrity-checks the file, snapshots the current database first
-(so the restore itself can be undone), swaps the file and restarts `me`.
+`byname-restore` integrity-checks the file, stops `byname`, keeps the current
+database (with its `-wal` and `-shm` files) as
+`snapshots/pre-restore-<UTC time>.db`, installs the snapshot and starts
+`byname` again. Undo a restore by restoring that copy:
+`sudo byname-restore /var/lib/byname/snapshots/pre-restore-<UTC time>.db`.
+Keeping the copy doesn't need the byname binary, so a restore works even when
+the current database is damaged or newer than the binary. `pre-restore-*`
+copies are never pruned or uploaded; delete old ones yourself.
+
+A restore clears the sign-in sessions in the restored copy, so everyone using
+the public address signs in again. Otherwise sessions revoked after the
+snapshot was taken (`byname sessions revoke`) would come back.
 
 ### Restore drill (do this once in M3, then yearly)
 
@@ -319,7 +344,7 @@ bin/byname export --db /tmp/drill.db | head -40     # links are there
 
 | Task | Command |
 |---|---|
-| Logs | `ssh <you>@me journalctl -u byname -f` (debug detail: `BYNAME_LOG_LEVEL=debug` in `/etc/byname/byname.env`) |
+| Logs | `ssh <you>@me journalctl -u byname -f` (debug detail: `BYNAME_LOG_LEVEL=debug` in `/etc/byname/byname.local.env`, then `sudo systemctl restart byname`) |
 | Health | `curl http://me/_/healthz` (version, link count, free disk; under-voltage flags on a Pi) |
 | Who changed what | `http://me/_/activity`, or a link's page (`me/name+`) |
 | Undo a bad edit | link page → History → "Restore this version" |
@@ -347,6 +372,8 @@ The host reboots at 04:00 when an update needs it.
 | `/_/whoami` shows no Tailscale user | WhoIs failed; `journalctl -u byname \| grep whois`; check `/var/run/tailscale/tailscaled.sock` exists |
 | Locked out of SSH | Tailscale SSH (`ssh <you>@me`) bypasses the LAN rule. Otherwise, on a Pi use a keyboard and HDMI, then `sudo systemctl stop byname-firewall`. A cloud server has no console login: build a new one ([cloud.md](cloud.md)) and restore the newest S3 backup (see Restore) |
 | Deploy rolled back | Read the journal lines it printed; `ssh <you>@me journalctl -u byname -n 50` |
+| Deploy rolled back, and the rollback failed too | The release changed the database schema, which the previous version refuses: run the `sudo byname-restore …` command the deploy printed (see Deploying changes) |
+| `byname-restore` says it can't read a file as byname | It reads byname's own files, and any path through a symlink, with byname's rights. Copy the file to a plain path (your home) and restore from there |
 
 ## Security model in one paragraph
 
