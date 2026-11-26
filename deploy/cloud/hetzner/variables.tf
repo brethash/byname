@@ -48,8 +48,9 @@ variable "public_domain" {
 variable "ssh_cidrs" {
   description = <<-EOT
     Addresses allowed to reach OpenSSH from the internet, e.g. ["203.0.113.7/32"] for your home
-    IPv4 (curl -s https://checkip.amazonaws.com). Required without Tailscale; leave empty with
-    Tailscale, which reaches SSH over the tailnet instead. Never use 0.0.0.0/0.
+    IPv4 (curl -s https://checkip.amazonaws.com), plus your home IPv6 prefix if you like. Required
+    without Tailscale. With Tailscale it is optional: you administer the server with Tailscale
+    SSH, and this is a way in that doesn't depend on Tailscale. Never use 0.0.0.0/0.
   EOT
   type        = list(string)
   default     = []
@@ -100,8 +101,9 @@ variable "ssh_public_key" {
   description = <<-EOT
     Your OpenSSH public key (the contents of ~/.ssh/id_ed25519.pub), installed for the "admin"
     user that first boot creates. Registering it with Hetzner also stops Hetzner from emailing a
-    root password. Day to day you log in with Tailscale SSH; this key is the fallback over the
-    tailnet.
+    root password. It is how you log in with OpenSSH from ssh_cidrs. With Tailscale you normally
+    use Tailscale SSH instead: while it is on, tailscaled answers port 22 on the tailnet itself,
+    so this key only works there after `sudo tailscale set --ssh=false`.
   EOT
   type        = string
 
@@ -181,7 +183,7 @@ variable "hetzner_backups" {
 }
 
 variable "protect" {
-  description = "Hetzner delete and rebuild protection. The database lives on this server's disk; turn this off only to tear it down."
+  description = "Hetzner delete and rebuild protection. The database lives on this server's disk; turn this off (tofu apply -var protect=false) only to tear the server down or replace it (docs/cloud.md)."
   type        = bool
   default     = true
 }

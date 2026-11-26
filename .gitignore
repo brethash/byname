@@ -12,8 +12,15 @@
 /dist/
 /tmp/
 
-# OpenTofu (deploy/cloud): state and tfvars hold secrets; lock files are committed
+# OpenTofu (deploy/cloud): state, plans and tfvars hold secrets; lock files are committed
 .terraform/
 *.tfstate
 *.tfstate.*
 terraform.tfvars
+*.auto.tfvars
+*.tfplan
+crash.log
+
+# databases the docs copy to your machine (moving hosts, restores from S3)
+*.db
+*.db.gz

@@ -1,0 +1,13 @@
+# Tailscale only (docs/cloud.md, With Tailscale):
+#   cp tailscale.tfvars.example terraform.tfvars    (gitignored), then edit.
+# Builds an IPv6-only nano_ipv6_3_0 server ($3.50/month) with nothing open
+# but Tailscale's WireGuard port. Pass the one-off auth key as
+# TF_VAR_tailscale_auth_key, never in this file.
+name           = "me"
+region         = "us-west-2"
+ssh_public_key = "ssh-ed25519 AAAA... you@laptop"
+tailscale      = true
+
+# Optional: OpenSSH from your own addresses too, a way in that doesn't depend
+# on Tailscale. An IPv6-only server needs IPv6 blocks here.
+# ssh_cidrs = ["2001:db8:1234::/48"]

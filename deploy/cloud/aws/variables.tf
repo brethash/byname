@@ -42,8 +42,11 @@ variable "public_domain" {
 variable "ssh_cidrs" {
   description = <<-EOT
     Addresses allowed to reach OpenSSH from the internet, e.g. ["203.0.113.7/32"] for your home
-    IPv4 (curl -s https://checkip.amazonaws.com). Required without Tailscale; leave empty with
-    Tailscale, which reaches SSH over the tailnet instead. Never use 0.0.0.0/0.
+    IPv4 (curl -s https://checkip.amazonaws.com), plus your home IPv6 prefix if you like. Required
+    without Tailscale. With Tailscale it is optional: you administer the server with Tailscale
+    SSH, and this is a way in that doesn't depend on Tailscale. Never use 0.0.0.0/0. An address
+    family left empty here is closed to SSH: the firewall rule lists a never-routed placeholder
+    for it, because Lightsail opens a family left out of a rule to everyone.
   EOT
   type        = list(string)
   default     = []
@@ -93,8 +96,9 @@ variable "tailscale_auth_key" {
 variable "ssh_public_key" {
   description = <<-EOT
     Your OpenSSH public key (the contents of ~/.ssh/id_ed25519.pub), installed for the "admin"
-    user. Without Tailscale it is how you log in (from ssh_cidrs); with Tailscale it is the
-    fallback over the tailnet.
+    user. It is how you log in with OpenSSH from ssh_cidrs. With Tailscale you normally use
+    Tailscale SSH instead: while it is on, tailscaled answers port 22 on the tailnet itself, so
+    this key only works there after `sudo tailscale set --ssh=false`.
   EOT
   type        = string
 
@@ -124,7 +128,8 @@ variable "ipv4" {
     A tailnet-only server doesn't need it: Tailscale clients on IPv4-only networks reach an
     IPv6-only server through Tailscale's relays.
 
-    Decide at creation: switching later means a different bundle, which replaces the server.
+    Decide at creation: switching later means a different bundle, which replaces the server and
+    its database (protect stops that).
   EOT
   type        = bool
   default     = false
@@ -134,7 +139,7 @@ variable "bundle_id" {
   description = <<-EOT
     Lightsail bundle. Defaults to the cheapest: nano_ipv6_3_0 ($3.50/month), or nano_3_0
     ($5.00) when ipv4 = true. `aws lightsail get-bundles` lists the others. Changing it replaces
-    the server (restore from backup afterwards).
+    the server (needs protect = false; restore from backup afterwards).
   EOT
   type        = string
   default     = null
@@ -149,4 +154,16 @@ variable "blueprint_id" {
     condition     = startswith(var.blueprint_id, "debian_")
     error_message = "bootstrap.sh supports Debian only."
   }
+}
+
+variable "protect" {
+  description = <<-EOT
+    Refuse any apply that would destroy or replace the server, which holds the database on its
+    disk: a changed name, bundle_id, ipv4 or availability_zone, -replace, or tofu destroy.
+    Lightsail has no delete protection of its own, so a guard resource stops the apply before
+    anything is touched. To do it on purpose: tofu apply -var protect=false (with no other
+    change), then run the replacing command with -var protect=false too (docs/cloud.md).
+  EOT
+  type        = bool
+  default     = true
 }

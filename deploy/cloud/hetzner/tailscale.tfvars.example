@@ -1,0 +1,13 @@
+# Tailscale only (docs/cloud.md, With Tailscale):
+#   cp tailscale.tfvars.example terraform.tfvars    (gitignored), then edit.
+# An IPv6-only server with nothing open but Tailscale's WireGuard port. Pass
+# secrets as environment variables, never in this file:
+# TF_VAR_hcloud_token, TF_VAR_tailscale_auth_key.
+name           = "me"
+location       = "hel1" # cheapest; ash or hil for US latency (€17.99)
+ssh_public_key = "ssh-ed25519 AAAA... you@laptop"
+tailscale      = true
+
+# Optional: OpenSSH from your own addresses too, a way in that doesn't depend
+# on Tailscale. An IPv6-only server can only be reached over IPv6.
+# ssh_cidrs = ["2001:db8:1234::/48"]

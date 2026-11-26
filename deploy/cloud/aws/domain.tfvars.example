@@ -1,0 +1,14 @@
+# Your own domain, no Tailscale (docs/cloud.md, the walkthrough):
+#   cp domain.tfvars.example terraform.tfvars    (gitignored), then edit.
+# Builds a dual-stack nano_3_0 server ($5.00/month) with TCP 80 and 443 open
+# to everyone and SSH open to ssh_cidrs only.
+name           = "me"
+region         = "us-west-2"
+ssh_public_key = "ssh-ed25519 AAAA... you@laptop"
+
+public_domain = "me.example.com"
+ipv4          = true               # needed for a public domain and Slack sign-in
+ssh_cidrs     = ["203.0.113.7/32"] # your home IPv4: curl -s https://checkip.amazonaws.com
+
+# Add tailscale = true (and TF_VAR_tailscale_auth_key) to put the server on
+# your tailnet as well.
