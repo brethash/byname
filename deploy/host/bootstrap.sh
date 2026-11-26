@@ -26,7 +26,7 @@ set -euo pipefail
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TAILNET_NETS="100.64.0.0/10 fd7a:115c:a1e0::/48"
 ADMIN_USER=""
-NAME="me"
+SVC_NAME="me" # --name; not NAME, which /etc/os-release sets
 TAG=""
 PLATFORM=""
 LAN_SUBNET=""
@@ -84,7 +84,7 @@ USAGE
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --admin-user) ADMIN_USER="${2:?}"; shift 2 ;;
-    --name|--hostname) NAME="${2:?}"; shift 2 ;;
+    --name|--hostname) SVC_NAME="${2:?}"; shift 2 ;;
     --tag) TAG="${2:?}"; shift 2 ;;
     --platform) PLATFORM="${2:?}"; shift 2 ;;
     --lan-subnet) LAN_SUBNET="${2:?}"; shift 2 ;;
@@ -124,20 +124,27 @@ case "$PLATFORM" in
     ;;
   *) die "--platform must be pi or cloud" ;;
 esac
-# shellcheck source=/dev/null
-. /etc/os-release
-[[ "${ID:-}" == "debian" ]] || die "expected Debian or Raspberry Pi OS, got ${PRETTY_NAME:-unknown}"
-[[ -n "${VERSION_CODENAME:-}" ]] || die "cannot read VERSION_CODENAME from /etc/os-release"
+# /etc/os-release sets NAME, VERSION, ID and more: read the fields needed in a
+# subshell, so none of them can overwrite this script's variables.
+os_release() { (
+  # shellcheck source=/dev/null
+  . /etc/os-release && printf '%s' "${!1:-}"
+) 2>/dev/null; }
+OS_ID="$(os_release ID || true)"
+OS_CODENAME="$(os_release VERSION_CODENAME || true)"
+OS_PRETTY="$(os_release PRETTY_NAME || true)"
+[[ "$OS_ID" == "debian" ]] || die "expected Debian or Raspberry Pi OS, got ${OS_PRETTY:-unknown}"
+[[ -n "$OS_CODENAME" ]] || die "cannot read VERSION_CODENAME from /etc/os-release"
 id "$ADMIN_USER" >/dev/null 2>&1 || die "user $ADMIN_USER does not exist"
 ADMIN_HOME="$(getent passwd "$ADMIN_USER" | cut -d: -f6)"
 [[ -s "$ADMIN_HOME/.ssh/authorized_keys" ]] ||
   die "$ADMIN_HOME/.ssh/authorized_keys is empty; add your SSH key before password logins are disabled"
 # A DNS label that starts with a letter: it is typed into address bars as
 # NAME/..., and becomes the hostname and the tailnet name.
-[[ "$NAME" =~ ^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$ ]] ||
-  die "invalid --name '$NAME': use 1-32 lower-case letters, digits or dashes, starting with a letter"
-[[ "$NAME" != "localhost" ]] || die "--name localhost would shadow this machine's loopback name"
-[[ -n "$TAG" ]] || TAG="tag:$NAME"
+[[ "$SVC_NAME" =~ ^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$ ]] ||
+  die "invalid --name '$SVC_NAME': use 1-32 lower-case letters, digits or dashes, starting with a letter"
+[[ "$SVC_NAME" != "localhost" ]] || die "--name localhost would shadow this machine's loopback name"
+[[ -n "$TAG" ]] || TAG="tag:$SVC_NAME"
 [[ "$TAG" =~ ^tag:[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || die "invalid --tag '$TAG' (want tag:something)"
 PUBLIC=0
 [[ $FUNNEL -eq 1 || -n "$PUBLIC_DOMAIN" ]] && PUBLIC=1
@@ -198,23 +205,23 @@ ipaddress.IPv4Network(sys.argv[1], strict=True)
 PY
   [[ -z "$LAN_DOMAIN" || "$LAN_DOMAIN" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || die "invalid --lan-domain: $LAN_DOMAIN"
   [[ "$LAN_DOMAIN" == "local" ]] && die "--lan-domain local is mDNS, not router DNS; use your router's domain (lan, home, home.arpa…)"
-  ok "$PRETTY_NAME on $(uname -m) (Raspberry Pi), service $NAME, admin $ADMIN_USER, LAN $LAN_SUBNET, LAN access $([[ $LAN_ACCESS -eq 1 ]] && echo on || echo off)"
+  ok "$OS_PRETTY on $(uname -m) (Raspberry Pi), service $SVC_NAME, admin $ADMIN_USER, LAN $LAN_SUBNET, LAN access $([[ $LAN_ACCESS -eq 1 ]] && echo on || echo off)"
 else
-  ok "$PRETTY_NAME on $(uname -m) (cloud), service $NAME, admin $ADMIN_USER, Tailscale $([[ $TAILSCALE -eq 1 ]] && echo on || echo off)"
+  ok "$OS_PRETTY on $(uname -m) (cloud), service $SVC_NAME, admin $ADMIN_USER, Tailscale $([[ $TAILSCALE -eq 1 ]] && echo on || echo off)"
 fi
 
 # ---------------------------------------------------------------- hostname
 step "Hostname"
-if [[ "$(hostname)" != "$NAME" ]]; then
-  hostnamectl set-hostname "$NAME"
-  ok "hostname set to $NAME"
+if [[ "$(hostname)" != "$SVC_NAME" ]]; then
+  hostnamectl set-hostname "$SVC_NAME"
+  ok "hostname set to $SVC_NAME"
 else
-  ok "hostname is $NAME"
+  ok "hostname is $SVC_NAME"
 fi
 if grep -q '^127\.0\.1\.1' /etc/hosts; then
-  sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$NAME/" /etc/hosts
+  sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$SVC_NAME/" /etc/hosts
 else
-  printf '127.0.1.1\t%s\n' "$NAME" >> /etc/hosts
+  printf '127.0.1.1\t%s\n' "$SVC_NAME" >> /etc/hosts
 fi
 if [[ -d /etc/cloud/cloud.cfg.d ]]; then
   # Stop cloud-init from putting the provider's hostname back on reboot.
@@ -265,7 +272,7 @@ step "Tailscale"
 if [[ $TAILSCALE -eq 0 ]]; then
   ok "not used (--no-tailscale)"
 elif ! command -v tailscale >/dev/null 2>&1; then
-  repo="https://pkgs.tailscale.com/stable/${ID}/${VERSION_CODENAME}"
+  repo="https://pkgs.tailscale.com/stable/${OS_ID}/${OS_CODENAME}"
   curl -fsSL "$repo.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg
   curl -fsSL "$repo.tailscale-keyring.list" -o /etc/apt/sources.list.d/tailscale.list
   apt-get -o DPkg::Lock::Timeout=300 update -qq
@@ -402,9 +409,9 @@ if [[ $TAILSCALE -eq 1 ]]; then
 try: print(json.load(sys.stdin).get("MagicDNSSuffix") or "")
 except Exception: print("")' || true)"
 fi
-HOSTS="$NAME"
-[[ -n "$TS_SUFFIX" ]] && HOSTS+=",$NAME.$TS_SUFFIX"
-[[ -n "$LAN_DOMAIN" ]] && HOSTS+=",$NAME.$LAN_DOMAIN"
+HOSTS="$SVC_NAME"
+[[ -n "$TS_SUFFIX" ]] && HOSTS+=",$SVC_NAME.$TS_SUFFIX"
+[[ -n "$LAN_DOMAIN" ]] && HOSTS+=",$SVC_NAME.$LAN_DOMAIN"
 if [[ $LAN_ACCESS -eq 1 ]]; then
   # Also accept the Pi's own LAN address as a Host name (http://192.168.1.x/),
   # handy before router DNS is set up. Safe against DNS rebinding: a hostile
@@ -436,8 +443,8 @@ if [[ $FUNNEL -eq 1 ]]; then
     die "--funnel needs Tailscale 1.98 or later (Funnel to a unix socket); this is ${ts_ver:-unknown}: apt-get install tailscale"
   DNS_NAME="$(tailscale status --json --peers=false 2>/dev/null | python3 -c 'import json, sys
 print(((json.load(sys.stdin).get("Self") or {}).get("DNSName") or "").rstrip(".").lower())')"
-  [[ "$DNS_NAME" == "$NAME.$TS_SUFFIX" ]] ||
-    die "this machine's tailnet name is '$DNS_NAME', not $NAME.$TS_SUFFIX (is another device named $NAME?)"
+  [[ "$DNS_NAME" == "$SVC_NAME.$TS_SUFFIX" ]] ||
+    die "this machine's tailnet name is '$DNS_NAME', not $SVC_NAME.$TS_SUFFIX (is another device named $SVC_NAME?)"
   PUBLIC_URL="https://$DNS_NAME"
   PUBLIC_LISTEN="unix:$PUBLIC_SOCK"
 fi
@@ -452,7 +459,7 @@ chmod 0644 /etc/byname/byname.env
 cat > /etc/byname/host.conf <<EOF
 # Managed by byname bootstrap.sh; read by byname-verify.
 PLATFORM=$PLATFORM
-NAME=$NAME
+NAME=$SVC_NAME
 TAG=$TAG
 TAILSCALE=$TAILSCALE
 LAN_SUBNET=$LAN_SUBNET
@@ -640,7 +647,7 @@ if [[ $TAILSCALE -eq 1 ]] && ! tailscale status >/dev/null 2>&1; then
   if [[ "$PLATFORM" == pi ]]; then
     cat <<EOF
     1. Join the tailnet (opens a login URL; your policy must define $TAG first):
-         sudo tailscale up --ssh --hostname=$NAME --advertise-tags=$TAG
+         sudo tailscale up --ssh --hostname=$SVC_NAME --advertise-tags=$TAG
     2. Re-run this script so BYNAME_HOSTS includes the full tailnet name.
 EOF
   else
@@ -649,7 +656,7 @@ EOF
 fi
 [[ $REBOOT_NEEDED -eq 1 ]] && echo "    * Reboot to apply config.txt changes: sudo reboot"
 if [[ $TAILSCALE -eq 1 ]]; then
-  echo "    * Deploy from your Mac:  make deploy TARGET=$ADMIN_USER@$NAME"
+  echo "    * Deploy from your Mac:  make deploy TARGET=$ADMIN_USER@$SVC_NAME"
 elif [[ "$PLATFORM" == pi ]]; then
   # OpenSSH on a Pi answers the LAN only, never the public domain.
   echo "    * Deploy from your Mac (on the home network):  make deploy TARGET=$ADMIN_USER@${LAN_IP:-PI-LAN-ADDRESS}"
